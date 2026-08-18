@@ -14,6 +14,8 @@ import ws.siri.jscore.runtime.universal.Repl;
  * /jscore eval &lt;script&gt;
  * 
  * Evaluate script content at scope "repo"
+ *
+ * TODO: shitty code quality
  */
 public class CmdEvaluate {
     public static int evaluate(CommandContext<CommandSourceStack> context) {

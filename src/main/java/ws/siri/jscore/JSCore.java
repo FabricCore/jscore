@@ -3,6 +3,8 @@ package ws.siri.jscore;
 import net.fabricmc.api.ModInitializer;
 
 import net.minecraft.resources.Identifier;
+import ws.siri.jscore.runtime.js.JsLangDef;
+import ws.siri.jscore.runtime.universal.Runtime;
 import ws.siri.jscore.ui.commands.RegisterCmds;
 
 import org.slf4j.Logger;
@@ -18,6 +20,8 @@ public class JSCore implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		// must happen before the first Runtime.getInstance()
+		Runtime.registerSupportedLanguage(new JsLangDef());
         RegisterCmds.register();
 		LOGGER.info("Hello Fabric world!");
 	}
