@@ -20,7 +20,7 @@ public class Runtime {
     /**
      * <file ext, lang ID>
      */
-    private HashMap<String, String> langExts;
+    private HashMap<String, LangDef> langExts;
 
     public static void registerSupportedLanguage(LangDef langDef) {
         if (instance != null)
@@ -36,12 +36,17 @@ public class Runtime {
 
         for (LangDef def : supportedLanguages)
             for (String ext : def.exts())
-                langExts.put(ext, def.id());
+                langExts.put(ext, def);
+    }
+
+    public static synchronized void initialise() {
+        if (instance != null) return;
+        instance = new Runtime();
     }
 
     public static Runtime getInstance() {
         if (instance == null)
-            instance = new Runtime();
+            throw new UnsupportedOperationException("runtime is not yet initialised");
         return instance;
     }
 
@@ -49,7 +54,7 @@ public class Runtime {
         return engine;
     }
 
-    public Optional<String> getLangId(String fileExt) {
+    public Optional<LangDef> getLangId(String fileExt) {
         if (langExts.containsKey(fileExt))
             return Optional.of(langExts.get(fileExt));
         else

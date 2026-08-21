@@ -5,6 +5,8 @@ import ws.siri.jscore.runtime.universal.ClassMarkers.LangSpecificModule;
 import ws.siri.jscore.Utils;
 import ws.siri.jscore.runtime.universal.Errors;
 
+import java.io.IOException;
+import java.util.List;
 import java.util.Optional;
 
 import org.graalvm.polyglot.Value;
@@ -21,6 +23,11 @@ public class JsModule implements LangSpecificModule {
         this.internal = internal;
     }
 
+    @FunctionalInterface
+    public interface ThroableBiFunction<T, U, R, E extends Exception> {
+        R apply(T t, U u) throws E;
+    }
+
     @Override
     public Object getMember(String key) {
         switch (key) {
@@ -28,6 +35,12 @@ public class JsModule implements LangSpecificModule {
                 return Utils.dangerouslyCastOptional(internal.getExports()).orElse(Undefined.instance);
             case "onunload":
                 return Utils.dangerouslyCastOptional(internal.getOnUnload()).orElse(Undefined.instance);
+            case "import":
+                // note: Value is String[]
+                return (ThroableBiFunction<String, String[], Object, IOException>) (path, preludeNames) -> {
+                    Optional<Value> res = internal.importRelative(path, preludeNames);
+                    return JsUtils.unwrapOrUndefined(res);
+                };
             default:
                 return Undefined.instance;
         }
@@ -35,7 +48,7 @@ public class JsModule implements LangSpecificModule {
 
     @Override
     public Object getMemberKeys() {
-        return new String[] { "exports", "onload" };
+        return new String[] { "exports", "onload", "import" };
     }
 
     @Override
@@ -43,6 +56,7 @@ public class JsModule implements LangSpecificModule {
         switch (key) {
             case "exports":
             case "onload":
+            case "import":
                 return true;
             default:
                 return false;
