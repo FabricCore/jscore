@@ -30,7 +30,7 @@ public class Runtime {
     }
 
     private Runtime() {
-        engine = Engine.create(supportedLanguages.stream().map(def -> def.id()).toList().toArray(new String[0]));
+        engine = Engine.create(supportedLanguages.stream().map(def -> def.id()).toList().toArray(String[]::new));
 
         langExts = new HashMap<>();
 

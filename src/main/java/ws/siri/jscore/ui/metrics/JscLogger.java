@@ -37,7 +37,7 @@ public class JscLogger {
     public JscLogger tag(String s) {
         ArrayList<String> tags = new ArrayList<>(Arrays.asList(this.tags));
         tags.add(s);
-        return new JscLogger(tags.toArray(new String[0]));
+        return new JscLogger(tags.toArray(String[]::new));
     }
 
     public void log(Level level, String content) {

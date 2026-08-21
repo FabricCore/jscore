@@ -37,8 +37,8 @@ public class JsModule implements LangSpecificModule {
                 return Utils.dangerouslyCastOptional(internal.getOnUnload()).orElse(Undefined.instance);
             case "import":
                 // note: Value is String[]
-                return (ThroableBiFunction<String, String[], Object, IOException>) (path, preludeNames) -> {
-                    Optional<Value> res = internal.importRelative(path, preludeNames);
+                return (ThroableBiFunction<String, List<String>, Object, IOException>) (path, preludeNames) -> {
+                    Optional<Value> res = internal.importRelative(path, preludeNames.toArray(String[]::new));
                     return JsUtils.unwrapOrUndefined(res);
                 };
             default:

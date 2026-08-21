@@ -64,7 +64,7 @@ public class ModuleCache {
         if (cache.containsKey(path))
             return cache.get(path).getExports();
 
-        Path filePath = FabricLoader.getInstance().getConfigDir().resolve(JSCore.MOD_ID, path.toArray(new String[0]));
+        Path filePath = FabricLoader.getInstance().getConfigDir().resolve(JSCore.MOD_ID, path.toArray(String[]::new));
         String content = Files.readString(filePath);
         List<Prelude> filePreludes = getPreludes(preludeNames);
 
