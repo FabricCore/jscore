@@ -1,4 +1,4 @@
-package ws.siri.jscore.runtime.universal;
+package ws.siri.jscore.runtime;
 
 public class Errors {
     public static class TypeMismatchException extends RuntimeException {

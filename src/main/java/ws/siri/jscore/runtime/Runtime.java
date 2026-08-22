@@ -1,4 +1,4 @@
-package ws.siri.jscore.runtime.universal;
+package ws.siri.jscore.runtime;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -7,7 +7,7 @@ import java.util.Set;
 
 import org.graalvm.polyglot.Engine;
 
-import ws.siri.jscore.runtime.universal.ClassMarkers.LangDef;
+import ws.siri.jscore.runtime.ClassMarkers.LangDef;
 
 public class Runtime {
     /**

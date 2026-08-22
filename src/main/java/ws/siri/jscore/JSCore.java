@@ -3,8 +3,7 @@ package ws.siri.jscore;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.minecraft.resources.Identifier;
-import ws.siri.jscore.runtime.js.JsLangDef;
-import ws.siri.jscore.runtime.universal.Runtime;
+import ws.siri.jscore.runtime.Runtime;
 import ws.siri.jscore.ui.commands.RegisterServerCmds;
 
 import org.slf4j.Logger;
@@ -20,7 +19,6 @@ public class JSCore implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        Runtime.registerSupportedLanguage(new JsLangDef());
         RegisterServerCmds.register();
 
         ServerLifecycleEvents.SERVER_STARTING.register((server) -> {

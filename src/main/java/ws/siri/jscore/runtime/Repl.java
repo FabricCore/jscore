@@ -1,4 +1,4 @@
-package ws.siri.jscore.runtime.universal;
+package ws.siri.jscore.runtime;
 
 import java.io.IOException;
 import java.time.LocalDateTime;

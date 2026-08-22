@@ -1,4 +1,4 @@
-package ws.siri.jscore.runtime.universal;
+package ws.siri.jscore.runtime;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -14,8 +14,8 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
-import ws.siri.jscore.runtime.universal.ClassMarkers.LangDef;
-import ws.siri.jscore.runtime.universal.ModuleCache.Prelude;
+import ws.siri.jscore.runtime.ClassMarkers.LangDef;
+import ws.siri.jscore.runtime.ModuleCache.Prelude;
 
 /**
  * the module object should never be directly accessible, currently it is a

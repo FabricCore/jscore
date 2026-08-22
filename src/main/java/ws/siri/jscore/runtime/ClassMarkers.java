@@ -1,4 +1,4 @@
-package ws.siri.jscore.runtime.universal;
+package ws.siri.jscore.runtime;
 
 import org.graalvm.polyglot.proxy.ProxyObject;
 

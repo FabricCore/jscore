@@ -6,8 +6,8 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import ws.siri.jscore.JSCore;
 import ws.siri.jscore.client.ui.commands.RegisterClientCmds;
-import ws.siri.jscore.runtime.universal.ModuleCache;
-import ws.siri.jscore.runtime.universal.Runtime;
+import ws.siri.jscore.runtime.ModuleCache;
+import ws.siri.jscore.runtime.Runtime;
 
 public class JSCoreClient implements ClientModInitializer {
     @Override

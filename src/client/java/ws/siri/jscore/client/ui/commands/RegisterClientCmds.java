@@ -4,7 +4,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
-import ws.siri.jscore.runtime.universal.Repl;
+import ws.siri.jscore.runtime.Repl;
 import ws.siri.jscore.ui.commands.CmdSource;
 import ws.siri.jscore.ui.commands.CmdTree;
 

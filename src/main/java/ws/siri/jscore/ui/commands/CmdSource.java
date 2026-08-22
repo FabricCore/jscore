@@ -2,7 +2,7 @@ package ws.siri.jscore.ui.commands;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
-import ws.siri.jscore.runtime.universal.Repl;
+import ws.siri.jscore.runtime.Repl;
 
 public interface CmdSource<S> {
     /**

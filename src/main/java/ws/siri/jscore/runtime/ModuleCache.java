@@ -1,4 +1,4 @@
-package ws.siri.jscore.runtime.universal;
+package ws.siri.jscore.runtime;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -15,8 +15,8 @@ import org.graalvm.polyglot.proxy.ProxyObject;
 
 import net.fabricmc.loader.api.FabricLoader;
 import ws.siri.jscore.JSCore;
-import ws.siri.jscore.runtime.universal.ClassMarkers.LangDef;
-import ws.siri.jscore.runtime.universal.ClassMarkers.LangSpecificModule;
+import ws.siri.jscore.runtime.ClassMarkers.LangDef;
+import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
 
 public class ModuleCache {
     private static ModuleCache instance = new ModuleCache();

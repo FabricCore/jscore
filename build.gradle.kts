@@ -30,19 +30,18 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation("net.fabricmc.fabric-api:fabric-api:${providers.gradleProperty("fabric_api_version").get()}")
 
-	// GraalJS. This is what org.graalvm.polyglot:js pulls in; that aggregator is not used
-	// directly because it is a pom-packaging module, and Gradle puts its raw .pom on the
-	// classpath, which Loom then fails to open as a jar while scanning for mods.
-	implementation("org.graalvm.polyglot:polyglot:${providers.gradleProperty("graal_version").get()}")
-	implementation("org.graalvm.js:js-language:${providers.gradleProperty("graal_version").get()}")
+	// The polyglot/Truffle host. No language is bundled here -- languages ship as separate
+	// mods that register themselves via Runtime.registerSupportedLanguage (see
+	// jscore-js-runtime for GraalJS). polyglot is exposed as `api` so those mods inherit it,
+	// and so they can read this build's Graal version back out of the published metadata.
+	api("org.graalvm.polyglot:polyglot:${providers.gradleProperty("graal_version").get()}")
 	implementation("org.graalvm.truffle:truffle-runtime:${providers.gradleProperty("graal_version").get()}")
 
-	// Nest GraalJS inside the mod jar so it is present outside the dev environment. include
-	// is not transitive, so the whole resolved graph has to be listed by hand.
+	// Nest the host half of Graal inside the mod jar so it is present outside the dev
+	// environment. include is not transitive, so the whole resolved graph has to be listed
+	// by hand. Language mods nest their own language-specific artifacts.
 	for (graalModule in listOf(
 		"org.graalvm.polyglot:polyglot",
-		"org.graalvm.js:js-language",
-		"org.graalvm.regex:regex",
 		"org.graalvm.truffle:truffle-api",
 		"org.graalvm.truffle:truffle-compiler",
 		"org.graalvm.truffle:truffle-runtime",
@@ -50,8 +49,6 @@ dependencies {
 		"org.graalvm.sdk:jniutils",
 		"org.graalvm.sdk:nativeimage",
 		"org.graalvm.sdk:word",
-		"org.graalvm.shadowed:icu4j",
-		"org.graalvm.shadowed:xz",
 	)) {
 		include("$graalModule:${providers.gradleProperty("graal_version").get()}")
 	}

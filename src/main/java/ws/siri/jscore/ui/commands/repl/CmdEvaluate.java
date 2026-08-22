@@ -15,7 +15,7 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
 import ws.siri.jscore.JSCore;
-import ws.siri.jscore.runtime.universal.Repl;
+import ws.siri.jscore.runtime.Repl;
 import ws.siri.jscore.ui.commands.CmdSource;
 
 /**
@@ -48,7 +48,7 @@ public class CmdEvaluate {
             Value res = repl.evaluate(expression);
             JSCore.LOGGER.info(String.format("[%s] Resolved : %s", uuid, expression));
             source.sendSuccess(context.getSource(),
-                    Component.literal(String.format("%s", res)).withStyle(ChatFormatting.GREEN), false);
+                    Component.literal(String.format("%s", res)).withStyle(ChatFormatting.YELLOW), false);
             return 1;
         } catch (IOException e) {
             JSCore.LOGGER.error(String.format("[%s] Error (IOException) : %s", uuid, e));

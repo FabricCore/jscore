@@ -5,7 +5,7 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
-import ws.siri.jscore.runtime.universal.Repl;
+import ws.siri.jscore.runtime.Repl;
 
 public class RegisterServerCmds {
     public static final CmdSource<CommandSourceStack> SOURCE = new CmdSource<>() {
