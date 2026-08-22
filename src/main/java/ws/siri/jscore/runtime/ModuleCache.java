@@ -21,6 +21,7 @@ import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
 public class ModuleCache {
     private static ModuleCache instance = new ModuleCache();
 
+    // TODO: also reference counts this
     public class Prelude {
         private LangDef langDef;
         private BiConsumer<ProxyObject, LangSpecificModule> preludeFunction;
@@ -66,40 +67,119 @@ public class ModuleCache {
     }
 
     /**
+     * centralised place for creating new (blank modules)
+     *
+     * requestedBy: if its empty means its explicitly loaded, if is some then that's
+     * the module
+     *
+     * returns an existing module if it is already in cache, ignoring all other
+     * inputs
+     */
+    private synchronized Module createModule(List<String> path, List<Prelude> filePreludes, String content,
+            Optional<List<String>> requestedBy) {
+        Module module;
+        if (cache.containsKey(path)) {
+            // rechecks as there may be a time difference between it has last been checked
+            // in get
+            // this block of code must also be replicated in get
+            module = cache.get(path);
+            if (!module.preludeMatches(filePreludes))
+                throw new IllegalArgumentException("prelude list does not match previous calls");
+        } else {
+            module = new Module(path, filePreludes, content, requestedBy);
+            cache.put(path, module);
+        }
+
+        // even if the module content is faulty causing an initialisation fail
+        // it is still considered as a dependency
+        if (requestedBy.isPresent())
+            module.addDependent(requestedBy.get());
+
+        return module;
+    }
+
+    /**
+     * centralised place for removing modules
+     *
+     * if requestedBy is empty, then set explicitlyLoaded to false, but it may still
+     * not unload if there are other dependencies
+     *
+     * requestedBy: if its empty means its explicitly loaded, if is some then that's
+     * the module
+     *
+     * returns the module if removal is successful
+     * noop and returns empty if the module is not loaded in the first place
+     */
+    private synchronized Optional<Module> removeModule(List<String> path, Optional<List<String>> requestedBy) {
+        if (!cache.containsKey(path))
+            return Optional.empty();
+
+        Module module = cache.get(path);
+        if (requestedBy.isPresent())
+            module.removeDependent(requestedBy.get());
+        else
+            module.unsetExplicitlyLoaded();
+
+        if (module.shouldUnload()) {
+            cache.remove(path);
+            return Optional.of(module);
+        } else
+            return Optional.empty();
+    }
+
+    /**
      * preludes are applied in order, duplicates will not be removed
      * - if module is not cached and not on disk, throws an error
      * - if module.exports is undefined, returns empty()
      * - if module.exports is set, returns of()
+     *
+     * requestedBy: if its empty means its explicitly loaded, if is some then that's
+     * the module
+     *
+     * if requsetedBy is empty, the path MUST be a path that is not in cache!
+     *
+     * note: circular import is UNDEFINED BEHAVIOUR
+     * until I find an O(1) way to detect it, it will fail silently and be badly
+     * behaved!
      */
-    public Optional<Value> get(List<String> path, String[] preludeNames) throws IOException {
-        if (cache.containsKey(path))
-            return cache.get(path).getExports();
+    public Optional<Value> get(List<String> path, String[] preludeNames, Optional<Module> requestedBy)
+            throws IOException {
+        List<Prelude> filePreludes = getPreludes(preludeNames);
+
+        if (cache.containsKey(path)) {
+            // this block of code must also be replicated in createModule
+            Module module = cache.get(path);
+            if (!module.preludeMatches(filePreludes))
+                throw new IllegalArgumentException("prelude list does not match previous calls");
+
+            if (requestedBy.isPresent()) {
+                requestedBy.get().addDependency(path);
+                module.addDependent(requestedBy.get().getPath());
+            } else
+                throw new IllegalArgumentException("pinning an already loaded file is not (yet) a thing");
+
+            return module.getExports();
+        }
 
         Path filePath = getModulePath(path);
         String content = Files.readString(filePath);
-        List<Prelude> filePreludes = getPreludes(preludeNames);
+        Module module = createModule(path, filePreludes, content, requestedBy.map(Module::getPath));
 
-        Module module = new Module(path, filePreludes, content);
-        cache.put(path, module);
+        requestedBy.ifPresent(m -> m.addDependency(path));
+
         return module.getExports();
     }
 
-    public boolean unload(List<String> path) {
-        if (!cache.containsKey(path))
-            return false;
-
-        Module module = cache.remove(path);
-        if (module.getOnUnload().isPresent())
-            module.getOnUnload().get().run();
-
-        return true;
+    public void unimportModule(List<String> path, Optional<Module> requestedBy) {
+        Optional<Module> removedModule = removeModule(path, requestedBy.map(Module::getPath));
+        requestedBy.ifPresent(module -> module.removeDependency(path));
+        removedModule.ifPresent(Module::unloadInternal);
     }
 
     public Repl spawnRepl(String fileExt, String[] preludeNames) {
         List<Prelude> filePreludes = getPreludes(preludeNames);
         List<String> replPath = List.of("sys", "repls", Repl.genReplName(fileExt));
-        Module module = new Module(replPath, filePreludes, "");
-        cache.put(replPath, module);
+        Module module = createModule(replPath, filePreludes, "", Optional.empty()); // explicitly loaded!
         return new Repl(module);
     }
 }

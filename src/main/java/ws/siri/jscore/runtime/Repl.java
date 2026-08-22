@@ -1,7 +1,6 @@
 package ws.siri.jscore.runtime;
 
 import java.io.IOException;
-import java.lang.StackWalker.Option;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
@@ -13,6 +12,11 @@ import org.graalvm.polyglot.Value;
 import ws.siri.jscore.JSCoreConfig;
 import ws.siri.jscore.runtime.ClassMarkers.LangDef;
 
+/**
+ * Pinned code files that can have new lines of code being evaluated into it
+ *
+ * For now it cannot be unloaded
+ */
 public class Repl {
     private Module internal;
     private boolean isFresh = true;
@@ -25,7 +29,7 @@ public class Repl {
                 UUID.randomUUID().toString().subSequence(0, 8), fileExt);
     }
 
-    public Repl(Module internal) {
+    Repl(Module internal) {
         this.internal = internal;
     }
 
@@ -41,6 +45,9 @@ public class Repl {
         return internal.eval(expression);
     }
 
+    /**
+     * this is identity if cache is Optional.of
+     */
     private static Optional<Repl> getFocusedOf(Optional<Repl> cache) {
         if (cache.isPresent())
             return cache;

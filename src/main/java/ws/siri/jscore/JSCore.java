@@ -7,8 +7,10 @@ import ws.siri.jscore.runtime.ModuleCache;
 import ws.siri.jscore.runtime.Runtime;
 import ws.siri.jscore.ui.commands.RegisterServerCmds;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +23,18 @@ public class JSCore implements ModInitializer {
     // That way, it's clear which mod wrote info, warnings, and errors.
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
+    public static void loadEntryPointIfExists(List<String> path) {
+        if (!ModuleCache.getInstance().fileExistsFor(path))
+            return;
+
+        try {
+            ModuleCache.getInstance()
+                    .get(path, new String[0], Optional.empty());
+        } catch (IOException e) {
+            JSCore.LOGGER.error(e.toString()); // TODO: be less ridiculous
+        }
+    }
+
     @Override
     public void onInitialize() {
         RegisterServerCmds.register();
@@ -30,16 +44,7 @@ public class JSCore implements ModInitializer {
             JSCoreConfig.initialise();
 
             List<String> serverEntryPoint = Arrays.asList(JSCoreConfig.getInstance().getServerEntryPoint().split("/"));
-
-            if (!ModuleCache.getInstance().fileExistsFor(serverEntryPoint))
-                return;
-
-            try {
-                ModuleCache.getInstance()
-                        .get(serverEntryPoint, new String[0]);
-            } catch (Exception e) {
-                JSCore.LOGGER.error(e.toString()); // TODO: be less ridiculous
-            }
+            loadEntryPointIfExists(serverEntryPoint);
         });
     }
 
