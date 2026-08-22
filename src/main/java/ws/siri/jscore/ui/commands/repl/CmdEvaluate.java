@@ -1,6 +1,7 @@
 package ws.siri.jscore.ui.commands.repl;
 
 import java.io.IOException;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.graalvm.polyglot.PolyglotException;
@@ -34,18 +35,32 @@ public class CmdEvaluate {
         S src = context.getSource();
         String expression = context.getArgument("expression", String.class);
         Player player = source.getPlayer(src);
-        Repl repl = source.getFocusedRepl();
-        String uuid = UUID.randomUUID().toString().substring(0, 8);
+        String uuid = "REPL" + UUID.randomUUID().toString().substring(0, 8);
+        Optional<Repl> repl = source.getFocusedRepl();
+
+        if (repl.isEmpty()) {
+            JSCore.LOGGER.error(String.format("[%s] Error (No language runtime registered)", uuid));
+            source.sendFailure(context.getSource(), Component
+                    .literal(String.format("Could not start a REPL because no language runtime has been loaded.")));
+            return 0;
+        }
 
         JSCore.LOGGER
-                .info(String.format("[%s] Started %s > %s : %s", uuid, repl.getName(), player.getName(), expression));
+                .info(String.format("[%s] Started %s > %s : %s", uuid, repl.get().getName(), player.getName(),
+                        expression));
+
+        if (repl.get().isFresh())
+            source.sendSuccess(context.getSource(),
+                    Component.literal(String.format("Created new REPL %s", repl.get().getName()))
+                            .withStyle(ChatFormatting.GRAY),
+                    false);
 
         source.sendSuccess(context.getSource(),
                 Component.literal(String.format("> %s", expression)).withStyle(ChatFormatting.GREEN), false);
 
         // TODO: all these logging goes to the ui/logger
         try {
-            Value res = repl.evaluate(expression);
+            Value res = repl.get().evaluate(expression);
             JSCore.LOGGER.info(String.format("[%s] Resolved : %s", uuid, expression));
             source.sendSuccess(context.getSource(),
                     Component.literal(String.format("%s", res)).withStyle(ChatFormatting.YELLOW), false);

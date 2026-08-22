@@ -54,6 +54,17 @@ public class ModuleCache {
                 }).toList();
     }
 
+    private Path getModulePath(List<String> path) {
+        return FabricLoader.getInstance().getConfigDir().resolve(JSCore.MOD_ID, path.toArray(String[]::new));
+    }
+
+    /**
+     * check if file for a particular module exists on disk
+     */
+    public boolean fileExistsFor(List<String> path) {
+        return Files.exists(getModulePath(path));
+    }
+
     /**
      * preludes are applied in order, duplicates will not be removed
      * - if module is not cached and not on disk, throws an error
@@ -64,7 +75,7 @@ public class ModuleCache {
         if (cache.containsKey(path))
             return cache.get(path).getExports();
 
-        Path filePath = FabricLoader.getInstance().getConfigDir().resolve(JSCore.MOD_ID, path.toArray(String[]::new));
+        Path filePath = getModulePath(path);
         String content = Files.readString(filePath);
         List<Prelude> filePreludes = getPreludes(preludeNames);
 
@@ -86,7 +97,7 @@ public class ModuleCache {
 
     public Repl spawnRepl(String fileExt, String[] preludeNames) {
         List<Prelude> filePreludes = getPreludes(preludeNames);
-        List<String> replPath = List.of("__sys", "repls", Repl.genReplName(fileExt));
+        List<String> replPath = List.of("sys", "repls", Repl.genReplName(fileExt));
         Module module = new Module(replPath, filePreludes, "");
         cache.put(replPath, module);
         return new Repl(module);

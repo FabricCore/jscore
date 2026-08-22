@@ -1,5 +1,7 @@
 package ws.siri.jscore.ui.commands;
 
+import java.util.Optional;
+
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
 import ws.siri.jscore.runtime.Repl;
@@ -7,8 +9,10 @@ import ws.siri.jscore.runtime.Repl;
 public interface CmdSource<S> {
     /**
      * Get current focused Repl for the client or server
+     *
+     * Optional.empty means no language runtime registered
      */
-    Repl getFocusedRepl();
+    Optional<Repl> getFocusedRepl();
 
     /**
      * Function to call in order to send a success/normal message

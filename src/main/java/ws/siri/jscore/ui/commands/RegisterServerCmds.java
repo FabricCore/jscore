@@ -1,5 +1,7 @@
 package ws.siri.jscore.ui.commands;
 
+import java.util.Optional;
+
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -10,7 +12,7 @@ import ws.siri.jscore.runtime.Repl;
 public class RegisterServerCmds {
     public static final CmdSource<CommandSourceStack> SOURCE = new CmdSource<>() {
         @Override
-        public Repl getFocusedRepl() {
+        public Optional<Repl> getFocusedRepl() {
             return Repl.getFocusedServer();
         }
 

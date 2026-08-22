@@ -1,5 +1,7 @@
 package ws.siri.jscore.client.ui.commands;
 
+import java.util.Optional;
+
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.network.chat.Component;
@@ -11,7 +13,7 @@ import ws.siri.jscore.ui.commands.CmdTree;
 public class RegisterClientCmds {
     public static final CmdSource<FabricClientCommandSource> SOURCE = new CmdSource<>() {
         @Override
-        public Repl getFocusedRepl() {
+        public Optional<Repl> getFocusedRepl() {
             return Repl.getFocusedClient();
         }
 

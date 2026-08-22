@@ -2,6 +2,7 @@ package ws.siri.jscore.runtime;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -20,7 +21,11 @@ public class Runtime {
     /**
      * <file ext, lang ID>
      */
-    private HashMap<String, LangDef> langExts;
+    private Map<String, LangDef> langExts;
+    /**
+     * <lang ID, lang def>
+     */
+    private Map<String, LangDef> langDefs;
 
     public static void registerSupportedLanguage(LangDef langDef) {
         if (instance != null)
@@ -33,14 +38,18 @@ public class Runtime {
         engine = Engine.create(supportedLanguages.stream().map(def -> def.id()).toList().toArray(String[]::new));
 
         langExts = new HashMap<>();
+        langDefs = new HashMap<>();
 
-        for (LangDef def : supportedLanguages)
+        for (LangDef def : supportedLanguages) {
+            langDefs.put(def.id(), def);
             for (String ext : def.exts())
                 langExts.put(ext, def);
+        }
     }
 
     public static synchronized void initialise() {
-        if (instance != null) return;
+        if (instance != null)
+            return;
         instance = new Runtime();
     }
 
@@ -59,5 +68,12 @@ public class Runtime {
             return Optional.of(langExts.get(fileExt));
         else
             return Optional.empty();
+    }
+
+    /**
+     * <lang ID, lang def>
+     */
+    public Map<String, LangDef> getAllLangDefs() {
+        return langDefs;
     }
 }
