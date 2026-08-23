@@ -23,6 +23,9 @@ public class JSCore implements ModInitializer {
     // That way, it's clear which mod wrote info, warnings, and errors.
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
+    // DO NOT IMPORT THE ENTRY POINT FROM A REPL,
+    // YOU SICK FUCK
+    // (for now, we might figure out how to handle it later)
     public static void loadEntryPointIfExists(List<String> path) {
         if (!ModuleCache.getInstance().fileExistsFor(path))
             return;
@@ -35,16 +38,26 @@ public class JSCore implements ModInitializer {
         }
     }
 
+    public static void unloadEntryPointIfExists(List<String> path) {
+        ModuleCache.getInstance().unimportModule(path, Optional.empty());
+    }
+
     @Override
     public void onInitialize() {
         RegisterServerCmds.register();
 
         ServerLifecycleEvents.SERVER_STARTING.register((server) -> {
             Runtime.initialise();
-            JSCoreConfig.initialise();
-
+            JSCoreConfig.ensureInitialised();
             List<String> serverEntryPoint = Arrays.asList(JSCoreConfig.getInstance().getServerEntryPoint().split("/"));
+
             loadEntryPointIfExists(serverEntryPoint);
+        });
+
+        ServerLifecycleEvents.SERVER_STOPPING.register((server) -> {
+            JSCoreConfig.ensureInitialised();
+            List<String> serverEntryPoint = Arrays.asList(JSCoreConfig.getInstance().getServerEntryPoint().split("/"));
+            unloadEntryPointIfExists(serverEntryPoint);
         });
     }
 

@@ -16,6 +16,7 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
+import ws.siri.jscore.JSCore;
 import ws.siri.jscore.runtime.ClassMarkers.LangDef;
 import ws.siri.jscore.runtime.ModuleCache.Prelude;
 
@@ -25,6 +26,12 @@ import ws.siri.jscore.runtime.ModuleCache.Prelude;
  * - modulecache
  * - repl
  */
+// TODO: note the possibility of cross thread import cycles, described below:
+// suppose both events happens at the same time
+// - A imports B before B is initialised (A loads not because of B)
+// - B imports A before A is initialised (B loads not because of A)
+// Then A and B are both waiting for each other to initialise
+// This is ignored for now but in future it should be addressed
 public class Module {
     private List<String> path;
     /**
@@ -73,6 +80,15 @@ public class Module {
     private Set<List<String>> dependents = ConcurrentHashMap.newKeySet();
 
     /**
+     * is it running
+     * if it is when ensureInitialised is called, then there is a circular import
+     * as ensureInitialised is synchronized, the only way it can be called multiple
+     * times at
+     * the same time is in a recursion
+     */
+    private boolean isEnsureInitialisedRunning = false;
+
+    /**
      * importedFrom: which module imports this module causing it to load? if empty,
      * the module is explicitly loaded
      */
@@ -97,6 +113,10 @@ public class Module {
             this.explicitlyLoaded = true;
     }
 
+    /**
+     * this must be called outside of useCache as running initialise can take a
+     * while, we dont want to block useCache
+     */
     synchronized void ensureInitialised() {
         if (isInitalised) {
             if (initError.isPresent())
@@ -105,38 +125,64 @@ public class Module {
             return;
         }
 
+        if (isEnsureInitialisedRunning)
+            throw new UnsupportedOperationException("circular imports");
+
         try {
+            isEnsureInitialisedRunning = true;
+
             // apply preludes
             Map<String, Object> globalScope = new HashMap<>();
             ProxyObject globalScopeProxy = ProxyObject.fromMap(globalScope);
             preludes.forEach(prelude -> prelude.apply(globalScopeProxy, this));
             globalScope.forEach((key, value) -> ctx.getBindings(this.langDef.id()).putMember(key, value));
             ctx.getBindings(this.langDef.id()).putMember("module", this.langDef.wrapModule(this));
-            this.eval(content);
+            this.evalWithoutWaiting(content);
         } catch (RuntimeException e) {
             initError = Optional.of(e);
             throw e;
         } finally {
             isInitalised = true;
             content = null;
+
+            isEnsureInitialisedRunning = false;
         }
 
     }
 
-    public Optional<Value> getExports() {
+    /**
+     * wait for file to evaluate and returns exports
+     */
+    Optional<Value> waitForExports() {
         ensureInitialised();
         return exports;
     }
 
-    public void setExports(Optional<Value> exports) {
+    /**
+     * DANGER! this should ONLY be accessed by lang specific module
+     */
+    public Optional<Value> getExportsInternal() {
+        return exports;
+    }
+
+    /**
+     * DANGER! this should ONLY be accessed by lang specific module
+     */
+    public void setExportsInternal(Optional<Value> exports) {
         this.exports = exports;
     }
 
-    public Optional<Runnable> getOnUnload() {
+    /**
+     * DANGER! this should ONLY be accessed by lang specific module
+     */
+    public Optional<Runnable> getOnUnloadInternal() {
         return onunload;
     }
 
-    public void setOnUnload(Optional<Runnable> onunload) {
+    /**
+     * DANGER! this should ONLY be accessed by lang specific module
+     */
+    public void setOnUnloadInternal(Optional<Runnable> onunload) {
         this.onunload = onunload;
     }
 
@@ -146,30 +192,60 @@ public class Module {
      * unloads module and triggers unload cascade
      *
      * at this stage, the module should've been already removed from ModuleCache
+     *
+     * this must be called outside of useCache as this can take a while,
+     * we dont want to block useCache
+     *
+     * note: a failed unload will not throw an exception
      */
     void unloadInternal() {
         try {
             // wait for initialisation to complete so onunload is correct
+            // modules load/unload should appear atomic - either it is loaded or it is not
+            // not waiting for this
             ensureInitialised();
         } catch (RuntimeException e) {
             // DONT CARE!
+        }
+
+        try {
+            onunload.ifPresent(Runnable::run);
+        } catch (RuntimeException e) {
+            // TODO: use the custom logger
+            JSCore.LOGGER.error(e.getMessage());
         } finally {
-            try {
-                onunload.ifPresent(Runnable::run);
-            } finally {
-                ctx.close();
-                // the cascade must happen regardless of whether onunload failed
-                Set<List<String>> oldDependencies = dependencies;
-                dependencies = ConcurrentHashMap.newKeySet();
-                // dont iterate and modify dependencies at the same time
-                // as unimportModule modifies the dependencies
-                oldDependencies.forEach(depPath -> ModuleCache.getInstance().unimportModule(depPath, Optional.of(this)));
-            }
+            // the cascade must happen regardless of whether onunload failed
+            Set<List<String>> oldDependencies = dependencies;
+            dependencies = ConcurrentHashMap.newKeySet();
+            // dont iterate and modify dependencies at the same time
+            // as unimportModule modifies the dependencies
+            oldDependencies
+                    .forEach(depPath -> ModuleCache.getInstance().unimportModule(depPath, Optional.of(this)));
+
+        }
+
+        try {
+            ctx.close(true); // force interrupts
+        } catch (RuntimeException e) {
+            // TODO: use the custom logger
+            JSCore.LOGGER.error(e.getMessage());
         }
     }
 
-    synchronized Value eval(String content) {
+    /**
+     * this must be called outside of useCache as this can take a while,
+     * we dont want to block useCache
+     */
+    Value eval(String content) {
         ensureInitialised();
+        return evalWithoutWaiting(content);
+    }
+
+    /**
+     * eval without waiting for ensureInitialised
+     * this is intended to be used inside an ensureInitialised
+     */
+    private synchronized Value evalWithoutWaiting(String content) {
         try {
             Source src = Source.newBuilder(this.langDef.id(), content, String.join("/", path)).build(); // this could
                                                                                                         // cause IO
@@ -185,9 +261,11 @@ public class Module {
     }
 
     /**
+     * this should ONLY be used by lang specific modules
+     *
      * import a file using a relative path, and apply preludes to the file
-     * if the file is already loaded, the prelude list is ignored and a cached
-     * version of it will return instead
+     *
+     * if the file is already loaded, throws an error if prelude list mismatches
      */
     public Optional<Value> importRelative(String path, String[] preludeNames) throws IOException {
         Path newPath = Path.of("/" + String.join("/", this.path)).getParent().resolve(path).normalize();

@@ -17,7 +17,7 @@ public class JSCoreClient implements ClientModInitializer {
 
         ClientLifecycleEvents.CLIENT_STARTED.register((client) -> {
             Runtime.initialise();
-            JSCoreConfig.initialise();
+            JSCoreConfig.ensureInitialised();
             List<String> clientEntryPoint = Arrays.asList(JSCoreConfig.getInstance().getClientEntryPoint().split("/"));
 
             JSCore.loadEntryPointIfExists(clientEntryPoint);

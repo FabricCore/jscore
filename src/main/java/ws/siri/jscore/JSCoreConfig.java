@@ -60,7 +60,7 @@ public class JSCoreConfig {
         }
     }
 
-    public static void initialise() {
+    public static synchronized void ensureInitialised() {
         if (instance.isPresent())
             return;
 

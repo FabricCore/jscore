@@ -16,6 +16,10 @@ import ws.siri.jscore.runtime.ClassMarkers.LangDef;
  * Pinned code files that can have new lines of code being evaluated into it
  *
  * For now it cannot be unloaded
+ * 
+ * DO NOT IMPORT A REPL FROM ANYWHERE ELSE,
+ * YOU SICK FUCK
+ * (for now, we might figure out how to handle it later)
  */
 public class Repl {
     private Module internal;
