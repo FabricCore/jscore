@@ -5,9 +5,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -33,6 +35,54 @@ public class ModuleCache {
         }
     }
 
+    private static class UnloadablesRes {
+        /**
+         * root is none when unloadables is empty
+         */
+        public Optional<Module> root;
+        /**
+         * includes root
+         */
+        public Set<List<String>> unloadables;
+
+        public UnloadablesRes(Optional<Module> root, Set<List<String>> unloadables) {
+            this.unloadables = unloadables;
+            this.root = root;
+        }
+
+        public static UnloadablesRes empty() {
+            return new UnloadablesRes(Optional.empty(), Set.of());
+        }
+    }
+
+    private static class CreateModuleRes {
+        private enum ResType {
+            CREATED,
+            WAIT_FOR_UNLOAD
+        }
+
+        public ResType resType;
+        public Module created;
+        public Runnable waitForUnload;
+
+        private CreateModuleRes() {
+        }
+
+        public static CreateModuleRes created(Module created) {
+            CreateModuleRes out = new CreateModuleRes();
+            out.resType = ResType.CREATED;
+            out.created = created;
+            return out;
+        }
+
+        public static CreateModuleRes waitForUnload(Runnable waitForUnload) {
+            CreateModuleRes out = new CreateModuleRes();
+            out.resType = ResType.WAIT_FOR_UNLOAD;
+            out.waitForUnload = waitForUnload;
+            return out;
+        }
+    }
+
     /**
      * (module: Module, scope object: Record<string, any>): void
      */
@@ -55,10 +105,15 @@ public class ModuleCache {
     }
 
     /**
-     * you MUST NOT access cache, or modify the tree outside of useCache in any way, including dependencies
+     * you MUST NOT access cache, or modify the tree outside of useCache in any way,
+     * including dependencies
      *
-     * with the exception for calling unload on a module already remove from the cache, that is safe
-     * because it modifying its dependencies is not visible in any way, and cascading unloads calls useCache again which is safe
+     * with the exception of when cascading unloading a subgraph that is already
+     * disconnected from the main graph
+     * you can modify the dependencies/dependents of those modules
+     * this is safe because they are already marked as unloading and their dep
+     * values will not be read until the unloading has
+     * completed and they are removed from cache
      */
     private synchronized <T> T useCache(Function<Map<List<String>, Module>, T> consumer) {
         return consumer.apply(__cache);
@@ -85,16 +140,51 @@ public class ModuleCache {
         return Files.exists(getModulePath(path));
     }
 
+    private static UnloadablesRes unloadableModules(Map<List<String>, Module> cache, Module unloadRoot) {
+        Set<List<String>> unloadables = new HashSet<>();
+        /**
+         * all modules in frontier have shouldUnload = true,
+         * but we haven't look at their dependencies yet
+         */
+        Set<Module> frontier = new HashSet<>();
+
+        if (!unloadRoot.shouldUnload())
+            return UnloadablesRes.empty();
+
+        frontier.add(unloadRoot);
+
+        while (frontier.size() != 0) {
+            Set<Module> newFrontier = new HashSet<>();
+
+            frontier.forEach(unloadable -> {
+                unloadables.add(unloadable.getPath());
+                unloadable.getDependencies().forEach(depPath -> {
+                    Module dep = cache.get(depPath);
+                    if (dep.getDependents().stream().allMatch(dependent -> unloadables.contains(dependent))
+                            && !dep.isExplicitlyLoaded())
+                        newFrontier.add(dep);
+                });
+            });
+
+            frontier = newFrontier;
+        }
+
+        return new UnloadablesRes(Optional.of(unloadRoot), unloadables);
+    }
+
     /**
      * centralised place for creating new (blank modules)
      *
      * requestedBy: if its empty means its explicitly loaded, if is some then that's
      * the module
      *
-     * returns an existing module if it is already in cache, but if preludes doesn't match
-     * the preludes used to create the cached version, it will throw an error
+     * # module not currently unloading
+     * returns an existing module if it is already in cache, but if preludes doesn't
+     * match the preludes used to create the cached version, it will throw an error
+     *
+     * # module currently unloading
      */
-    private Module createModule(List<String> path, List<Prelude> filePreludes, String content,
+    private CreateModuleRes createModule(List<String> path, List<Prelude> filePreludes, String content,
             Optional<Module> requestedBy) {
         return useCache(cache -> {
             Module mod;
@@ -103,6 +193,12 @@ public class ModuleCache {
                 // in get
                 // this block of code must also be replicated in get
                 mod = cache.get(path);
+
+                // retry if module is currently being unloaded
+                Optional<Runnable> waitForUnloadTask = mod.waitForUnloadTask();
+                if (waitForUnloadTask.isPresent())
+                    return CreateModuleRes.waitForUnload(waitForUnloadTask.get());
+
                 if (!mod.preludeMatches(filePreludes))
                     throw new IllegalArgumentException("prelude list does not match previous calls");
             } else {
@@ -117,7 +213,7 @@ public class ModuleCache {
 
             requestedBy.ifPresent(m -> m.addDependency(path));
 
-            return mod;
+            return CreateModuleRes.created(mod);
         });
     }
 
@@ -130,10 +226,14 @@ public class ModuleCache {
      * requestedBy: if its empty means its explicitly loaded, if is some then that's
      * the module
      *
-     * returns the module if removal is successful
-     * noop and returns empty if the module is not loaded in the first place
+     * returns empty is the module at that path doesn't need to be removed
+     * Optional.of if it needs to be removed
      *
-     * this should ONLY be used by unimportModule, as this also removes the dependency
+     * after this is called, all the modules that needs to be removed have been
+     * correctly marked with unloading
+     *
+     * this should ONLY be used by unimportModule, as this also removes the
+     * dependency
      */
     private Optional<Module> removeModule(List<String> path, Optional<Module> requestedBy) {
         return useCache(cache -> {
@@ -141,6 +241,10 @@ public class ModuleCache {
                 return Optional.empty();
 
             Module module = cache.get(path);
+
+            if (module.needToWaitForUnload())
+                return Optional.empty();
+
             if (requestedBy.isPresent())
                 module.removeDependent(requestedBy.get().getPath());
             else
@@ -148,11 +252,11 @@ public class ModuleCache {
 
             requestedBy.ifPresent(m -> m.removeDependency(path));
 
-            if (module.shouldUnload()) {
-                cache.remove(path);
-                return Optional.of(module);
-            } else
-                return Optional.empty();
+            // calculate and mark the classes, do not modify the cache DAG
+            // returns an empty set if module should not be removed
+            UnloadablesRes toUnload = unloadableModules(cache, module);
+            toUnload.unloadables.forEach(modulePath -> cache.get(modulePath).startUnloading());
+            return toUnload.root;
         });
     }
 
@@ -175,6 +279,10 @@ public class ModuleCache {
             if (cache.containsKey(path)) {
                 // this block of code must also be replicated in createModule
                 Module module = cache.get(path);
+
+                if (module.needToWaitForUnload())
+                    return Optional.empty();
+
                 if (!module.preludeMatches(filePreludes))
                     throw new IllegalArgumentException("prelude list does not match previous calls");
 
@@ -194,25 +302,84 @@ public class ModuleCache {
 
         Path filePath = getModulePath(path);
         String content = Files.readString(filePath);
-        Module module = createModule(path, filePreludes, content, requestedBy);
 
-        return module.waitForExports();
+        Optional<Module> resolvedModule = Optional.empty();
+
+        // if need to wait for unload, try again until success
+        while (resolvedModule.isEmpty()) {
+            CreateModuleRes res = createModule(path, filePreludes, content, requestedBy);
+            switch (res.resType) {
+                case CREATED:
+                    resolvedModule = Optional.of(res.created);
+                    break;
+                case WAIT_FOR_UNLOAD:
+                    res.waitForUnload.run();
+                    break;
+            }
+        }
+
+        return resolvedModule.get().waitForExports();
     }
 
     /**
      * remove dependency of one module
      *
-     * the values from the unimported module is undefined behaviour after an unimport
+     * the values from the unimported module is undefined behaviour after an
+     * unimport
      */
     public void unimportModule(List<String> path, Optional<Module> requestedBy) {
-        Optional<Module> removedModule = removeModule(path, requestedBy);
-        removedModule.ifPresent(Module::unloadInternal);
+        Optional<Module> unloadableRoot = removeModule(path, requestedBy);
+
+        if (unloadableRoot.isEmpty())
+            return;
+
+        // every module in frontier is shouldUnload = true
+        Set<Module> frontier = new HashSet<>();
+        frontier.add(unloadableRoot.get());
+
+        // walk the graph :D
+        // NOTE: this is the only instance where the graph can be modified outside of
+        // useCache
+        // this is because the graph is disconnecte from the rest of the graph, and
+        // their dependencies/dependents values will not accessed
+        // by any other code while they are all waiting for unload to complete and
+        // unblock
+        while (frontier.size() != 0) {
+            Set<Module> newFrontier = new HashSet<>();
+
+            frontier.forEach(unloadable -> {
+                useCache(cache -> {
+                    unloadable.getDependencies().forEach(depPath -> {
+                        Module dep = cache.get(depPath);
+                        dep.removeDependent(unloadable.getPath());
+                        if (dep.shouldUnload())
+                            newFrontier.add(dep);
+                    });
+                    return null;
+                });
+
+                unloadable.doUnloadCleanup();
+
+                useCache(cache -> {
+                    cache.remove(unloadable.getPath());
+                    unloadable.completeUnloading();
+                    return null;
+                });
+            });
+
+            frontier = newFrontier;
+        }
     }
 
     public Repl spawnRepl(String fileExt, String[] preludeNames) {
         List<Prelude> filePreludes = getPreludes(preludeNames);
         List<String> replPath = List.of("sys", "repls", Repl.genReplName(fileExt));
-        Module module = createModule(replPath, filePreludes, "", Optional.empty()); // explicitly loaded!
-        return new Repl(module);
+
+        CreateModuleRes createRes = createModule(replPath, filePreludes, "", Optional.empty()); // explicitly
+        if (createRes.resType != CreateModuleRes.ResType.CREATED)
+            throw new RuntimeException(
+                    "how lucky must you be to hit this branch?! its an astronomically small chance!");
+
+        return new Repl(createRes.created);
     }
 }

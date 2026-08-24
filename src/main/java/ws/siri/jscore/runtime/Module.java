@@ -2,12 +2,14 @@ package ws.siri.jscore.runtime;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.stream.StreamSupport;
 
 import org.apache.commons.io.FilenameUtils;
@@ -59,6 +61,13 @@ public class Module {
     private Context ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
     private Optional<Value> exports = Optional.empty();
     private Optional<Runnable> onunload = Optional.empty();
+
+    /**
+     * set to some when the unload is requested
+     *
+     * the latch is released when unload task has finished
+     */
+    private Optional<CountDownLatch> unloadTask = Optional.empty();
 
     /**
      * whether the loading was explicit: all modules must have an explicit dependent
@@ -113,6 +122,10 @@ public class Module {
             this.explicitlyLoaded = true;
     }
 
+    public List<String> getPath() {
+        return path;
+    }
+
     /**
      * this must be called outside of useCache as running initialise can take a
      * while, we dont want to block useCache
@@ -147,7 +160,6 @@ public class Module {
 
             isEnsureInitialisedRunning = false;
         }
-
     }
 
     /**
@@ -197,8 +209,10 @@ public class Module {
      * we dont want to block useCache
      *
      * note: a failed unload will not throw an exception
+     *
+     * note 2: this does not unlock the unload lock, you'll have to do it separately
      */
-    void unloadInternal() {
+    void doUnloadCleanup() {
         try {
             // wait for initialisation to complete so onunload is correct
             // modules load/unload should appear atomic - either it is loaded or it is not
@@ -213,15 +227,6 @@ public class Module {
         } catch (RuntimeException e) {
             // TODO: use the custom logger
             JSCore.LOGGER.error(e.getMessage());
-        } finally {
-            // the cascade must happen regardless of whether onunload failed
-            Set<List<String>> oldDependencies = dependencies;
-            dependencies = ConcurrentHashMap.newKeySet();
-            // dont iterate and modify dependencies at the same time
-            // as unimportModule modifies the dependencies
-            oldDependencies
-                    .forEach(depPath -> ModuleCache.getInstance().unimportModule(depPath, Optional.of(this)));
-
         }
 
         try {
@@ -256,10 +261,6 @@ public class Module {
         }
     }
 
-    public List<String> getPath() {
-        return path;
-    }
-
     /**
      * this should ONLY be used by lang specific modules
      *
@@ -268,6 +269,9 @@ public class Module {
      * if the file is already loaded, throws an error if prelude list mismatches
      */
     public Optional<Value> importRelative(String path, String[] preludeNames) throws IOException {
+        if (unloadTask.isPresent())
+            throw new UnsupportedOperationException("cannot run import during unload");
+
         Path newPath = Path.of("/" + String.join("/", this.path)).getParent().resolve(path).normalize();
         List<String> newPathChunks = StreamSupport.stream(newPath.spliterator(), false).map(Path::toString).toList();
         return ModuleCache.getInstance().get(newPathChunks, preludeNames, Optional.of(this));
@@ -277,6 +281,7 @@ public class Module {
         return String.join("/", this.path);
     }
 
+    // stuff used by module cache to manage the cache DAG
     boolean shouldUnload() {
         return !explicitlyLoaded && dependents.isEmpty();
     }
@@ -299,6 +304,89 @@ public class Module {
 
     void removeDependency(List<String> path) {
         dependencies.remove(path);
+    }
+
+    /**
+     * this is only to be used by ModuleCache to resolve the unload tree
+     *
+     * the set is immutable
+     */
+    Set<List<String>> getDependents() {
+        return Collections.unmodifiableSet(dependents);
+    }
+
+    /**
+     * this is only to be used by ModuleCache to resolve the unload tree
+     *
+     * the set is immutable
+     */
+    Set<List<String>> getDependencies() {
+        return Collections.unmodifiableSet(dependencies);
+    }
+
+    /**
+     * this is only to be used by ModuleCache to resolve the unload tree
+     */
+    boolean isExplicitlyLoaded() {
+        return explicitlyLoaded;
+    }
+
+    void startUnloading() {
+        if (this.unloadTask.isPresent())
+            throw new UnsupportedOperationException("startUnloading when the module is already being unloaded");
+
+        this.unloadTask = Optional.of(new CountDownLatch(1));
+    }
+
+    void completeUnloading() {
+        if (unloadTask.isEmpty())
+            throw new UnsupportedOperationException("completeUnloading when the module is not being unloaded");
+
+        unloadTask.get().countDown();
+        unloadTask = Optional.empty();
+    }
+
+    /**
+     * returns true if you did wait for an unload
+     * returns false if it had been a noop
+     *
+     * DANGER! this needs to be run immediately
+     * if you wish to wait for it later, use waitForUnloadTask
+     */
+    boolean waitForUnload() {
+        if (unloadTask.isPresent()) {
+            try {
+                unloadTask.get().await();
+            } catch (InterruptedException e) {
+                // TODO: it might be, e.g. when the game stops, but we'll figure that out later
+                throw new RuntimeException("unloading shouldn't be interrupted", e);
+            }
+            return true;
+        } else
+            return false;
+    }
+
+    Optional<Runnable> waitForUnloadTask() {
+        if (unloadTask.isPresent()) {
+            CountDownLatch latch = unloadTask.get();
+            return Optional.of(() -> {
+                try {
+                    latch.await();
+                } catch (InterruptedException e) {
+                    // TODO: it might be, e.g. when the game stops, but we'll figure that out later
+                    throw new RuntimeException("unloading shouldn't be interrupted", e);
+                }
+            });
+        } else
+            return Optional.empty();
+    }
+
+    /**
+     * returns true if need to wait for an unload (an unloading job is ongoing)
+     * returns false otherwise
+     */
+    boolean needToWaitForUnload() {
+        return unloadTask.isPresent();
     }
 
     boolean preludeMatches(List<Prelude> other) {
