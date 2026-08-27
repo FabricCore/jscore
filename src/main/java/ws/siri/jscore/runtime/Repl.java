@@ -35,6 +35,7 @@ public class Repl {
 
     Repl(Module internal) {
         this.internal = internal;
+        internal.waitForInit();
     }
 
     private static Optional<LangDef> defaultReplLanguage() {

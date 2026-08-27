@@ -3,6 +3,7 @@ package ws.siri.jscore.runtime;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -24,6 +25,13 @@ import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
 
 public class ModuleCache {
     private static ModuleCache instance = new ModuleCache();
+    /**
+     * how many unload tasks active?
+     *
+     * the same thread can be multiple unloads active because an unload can call
+     * unload inside it
+     */
+    private ThreadLocal<Integer> threadUnloadingTaskCount = ThreadLocal.withInitial(() -> 0);
 
     // TODO: also reference counts this
     public class Prelude {
@@ -32,26 +40,6 @@ public class ModuleCache {
 
         public void apply(ProxyObject globalScope, Module module) {
             preludeFunction.accept(globalScope, langDef.wrapModule(module));
-        }
-    }
-
-    private static class UnloadablesRes {
-        /**
-         * root is none when unloadables is empty
-         */
-        public Optional<Module> root;
-        /**
-         * includes root
-         */
-        public Set<List<String>> unloadables;
-
-        public UnloadablesRes(Optional<Module> root, Set<List<String>> unloadables) {
-            this.unloadables = unloadables;
-            this.root = root;
-        }
-
-        public static UnloadablesRes empty() {
-            return new UnloadablesRes(Optional.empty(), Set.of());
         }
     }
 
@@ -140,8 +128,12 @@ public class ModuleCache {
         return Files.exists(getModulePath(path));
     }
 
-    private static UnloadablesRes unloadableModules(Map<List<String>, Module> cache, Module unloadRoot) {
+    /**
+     * returns a list of modules in the order that they should be unloaded
+     */
+    private static List<Module> unloadableModules(Map<List<String>, Module> cache, Module unloadRoot) {
         Set<List<String>> unloadables = new HashSet<>();
+        List<Module> unloadablesOrdered = new ArrayList<>();
         /**
          * all modules in frontier have shouldUnload = true,
          * but we haven't look at their dependencies yet
@@ -149,7 +141,7 @@ public class ModuleCache {
         Set<Module> frontier = new HashSet<>();
 
         if (!unloadRoot.shouldUnload())
-            return UnloadablesRes.empty();
+            return List.of();
 
         frontier.add(unloadRoot);
 
@@ -158,6 +150,7 @@ public class ModuleCache {
 
             frontier.forEach(unloadable -> {
                 unloadables.add(unloadable.getPath());
+                unloadablesOrdered.add(unloadable);
                 unloadable.getDependencies().forEach(depPath -> {
                     Module dep = cache.get(depPath);
                     if (dep.getDependents().stream().allMatch(dependent -> unloadables.contains(dependent))
@@ -169,7 +162,7 @@ public class ModuleCache {
             frontier = newFrontier;
         }
 
-        return new UnloadablesRes(Optional.of(unloadRoot), unloadables);
+        return unloadablesOrdered;
     }
 
     /**
@@ -195,9 +188,8 @@ public class ModuleCache {
                 mod = cache.get(path);
 
                 // retry if module is currently being unloaded
-                Optional<Runnable> waitForUnloadTask = mod.waitForUnloadTask();
-                if (waitForUnloadTask.isPresent())
-                    return CreateModuleRes.waitForUnload(waitForUnloadTask.get());
+                if (mod.getPhase().unloadRequested())
+                    return CreateModuleRes.waitForUnload(() -> mod.waitForUnload());
 
                 if (!mod.preludeMatches(filePreludes))
                     throw new IllegalArgumentException("prelude list does not match previous calls");
@@ -234,19 +226,21 @@ public class ModuleCache {
      *
      * this should ONLY be used by unimportModule, as this also removes the
      * dependency
+     *
+     * List<Path>
      */
-    private Optional<Module> removeModule(List<String> path, Optional<Module> requestedBy) {
+    private List<Module> removeModule(List<String> path, Optional<Module> requestedBy) {
         return useCache(cache -> {
             if (!cache.containsKey(path))
-                return Optional.empty();
+                return List.of();
 
             Module module = cache.get(path);
 
-            if (module.needToWaitForUnload())
-                return Optional.empty();
+            if (!module.isDependencyOf(requestedBy.map(Module::getPath)))
+                return List.of();
 
             if (requestedBy.isPresent())
-                module.removeDependent(requestedBy.get().getPath());
+                module.removeDependentOnly(requestedBy.get().getPath());
             else
                 module.unsetExplicitlyLoaded();
 
@@ -254,9 +248,14 @@ public class ModuleCache {
 
             // calculate and mark the classes, do not modify the cache DAG
             // returns an empty set if module should not be removed
-            UnloadablesRes toUnload = unloadableModules(cache, module);
-            toUnload.unloadables.forEach(modulePath -> cache.get(modulePath).startUnloading());
-            return toUnload.root;
+            List<Module> unloadables = unloadableModules(cache, module);
+            unloadables.forEach(unloadable -> {
+                unloadable.startUnloading();
+                unloadable.getDependencies().forEach(unloadableDep -> {
+                    cache.get(unloadableDep).startDependentUnloading(unloadable.getPath());
+                });
+            });
+            return unloadables;
         });
     }
 
@@ -273,6 +272,9 @@ public class ModuleCache {
      */
     public Optional<Value> get(List<String> path, String[] preludeNames, Optional<Module> requestedBy)
             throws IOException {
+        if (threadUnloadingTaskCount.get() != 0)
+            throw new UnsupportedOperationException("cannot run import during unload");
+
         List<Prelude> filePreludes = getPreludes(preludeNames);
 
         Optional<Module> cacheHit = useCache(cache -> {
@@ -280,7 +282,7 @@ public class ModuleCache {
                 // this block of code must also be replicated in createModule
                 Module module = cache.get(path);
 
-                if (module.needToWaitForUnload())
+                if (module.getPhase().unloadRequested())
                     return Optional.empty();
 
                 if (!module.preludeMatches(filePreludes))
@@ -318,6 +320,7 @@ public class ModuleCache {
             }
         }
 
+        resolvedModule.get().initialise();
         return resolvedModule.get().waitForExports();
     }
 
@@ -328,46 +331,34 @@ public class ModuleCache {
      * unimport
      */
     public void unimportModule(List<String> path, Optional<Module> requestedBy) {
-        Optional<Module> unloadableRoot = removeModule(path, requestedBy);
+        threadUnloadingTaskCount.set(threadUnloadingTaskCount.get() + 1);
 
-        if (unloadableRoot.isEmpty())
-            return;
+        try {
+            List<Module> unloadableOrdered = removeModule(path, requestedBy);
 
-        // every module in frontier is shouldUnload = true
-        Set<Module> frontier = new HashSet<>();
-        frontier.add(unloadableRoot.get());
-
-        // walk the graph :D
-        // NOTE: this is the only instance where the graph can be modified outside of
-        // useCache
-        // this is because the graph is disconnecte from the rest of the graph, and
-        // their dependencies/dependents values will not accessed
-        // by any other code while they are all waiting for unload to complete and
-        // unblock
-        while (frontier.size() != 0) {
-            Set<Module> newFrontier = new HashSet<>();
-
-            frontier.forEach(unloadable -> {
-                useCache(cache -> {
-                    unloadable.getDependencies().forEach(depPath -> {
-                        Module dep = cache.get(depPath);
-                        dep.removeDependent(unloadable.getPath());
-                        if (dep.shouldUnload())
-                            newFrontier.add(dep);
-                    });
-                    return null;
-                });
-
+            // NOTE: this is the only instance where the graph can be modified outside of
+            // useCache
+            // this is because the graph is disconnecte from the rest of the graph, and
+            // their dependencies/dependents values will not accessed
+            // by any other code while they are all waiting for unload to complete and
+            // unblock
+            // TODO: alternative way: run everything in parallel
+            unloadableOrdered.forEach(unloadable -> {
+                unloadable.waitForUnloadingDependents();
                 unloadable.doUnloadCleanup();
 
                 useCache(cache -> {
                     cache.remove(unloadable.getPath());
-                    unloadable.completeUnloading();
+                    unloadable.getDependencies().forEach(depPath -> {
+                        cache.get(depPath).completeDependentUnloading();
+                    });
                     return null;
                 });
-            });
 
-            frontier = newFrontier;
+                unloadable.doneUnloading();
+            });
+        } finally {
+            threadUnloadingTaskCount.set(threadUnloadingTaskCount.get() - 1);
         }
     }
 

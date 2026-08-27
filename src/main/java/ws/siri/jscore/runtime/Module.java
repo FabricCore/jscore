@@ -19,6 +19,8 @@ import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
 import ws.siri.jscore.JSCore;
+import ws.siri.jscore.Utils;
+import ws.siri.jscore.Utils.CounterLock;
 import ws.siri.jscore.runtime.ClassMarkers.LangDef;
 import ws.siri.jscore.runtime.ModuleCache.Prelude;
 
@@ -35,39 +37,65 @@ import ws.siri.jscore.runtime.ModuleCache.Prelude;
 // Then A and B are both waiting for each other to initialise
 // This is ignored for now but in future it should be addressed
 public class Module {
-    private List<String> path;
+    private final List<String> path;
     /**
      * language used for this module
      */
-    private LangDef langDef;
+    private final LangDef langDef;
+    /**
+     * preludes used when creating the module
+     */
+    private final List<Prelude> preludes;
+    /**
+     * string used when creating the module
+     */
+    private final String content;
 
-    // these values are relevant when initialisation has not yet completed,
-    // they are a copy of the parameters passed on instantiation so initialisation
-    // don't block the instantiation queue which is not parallelised
+    public static enum ModulePhase {
+        /**
+         * default state when created
+         */
+        INHERT,
+        /**
+         * an initialisation has been request
+         */
+        INITIALISING,
+        /**
+         * still initialising, but an unload has been requested, the when init has
+         * completed the next state is unloading
+         */
+        UNLOAD_WAITING_INIT,
+        /**
+         * the module isn't doing anything special, state goes to unloading whenever
+         * unloading is requseted
+         */
+        ACTIVE,
+        /**
+         * the module is being unloaded, in this state, module.import is not allowed
+         */
+        UNLOADING;
+
+        public boolean isInitialised() {
+            return this == ACTIVE || this == UNLOADING;
+        }
+
+        public boolean unloadRequested() {
+            return this == UNLOADING || this == UNLOAD_WAITING_INIT;
+        }
+    }
+
     /**
-     * whether the initial evaluation has completed
+     * current state of the module
      */
-    private boolean isInitalised = false;
-    private List<Prelude> preludes;
-    /**
-     * this field is cleared after initialised
-     */
-    private String content;
+    private volatile ModulePhase phase = ModulePhase.INHERT;
     /**
      * evaluation error on initialisation
      */
-    private Optional<RuntimeException> initError = Optional.empty();
+    private volatile Optional<RuntimeException> initError = Optional.empty();
 
     private Context ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
     private Optional<Value> exports = Optional.empty();
     private Optional<Runnable> onunload = Optional.empty();
-
-    /**
-     * set to some when the unload is requested
-     *
-     * the latch is released when unload task has finished
-     */
-    private Optional<CountDownLatch> unloadTask = Optional.empty();
 
     /**
      * whether the loading was explicit: all modules must have an explicit dependent
@@ -89,13 +117,18 @@ public class Module {
     private Set<List<String>> dependents = ConcurrentHashMap.newKeySet();
 
     /**
-     * is it running
-     * if it is when ensureInitialised is called, then there is a circular import
-     * as ensureInitialised is synchronized, the only way it can be called multiple
-     * times at
-     * the same time is in a recursion
+     * blocks until the module has no more dependents (including the ones that are
+     * unloading)
      */
-    private boolean isEnsureInitialisedRunning = false;
+    private CounterLock unloadingDependentsWaiter = new CounterLock();
+    /**
+     * blocks until the module is fully unloaded
+     */
+    private CountDownLatch unloadWaiter = new CountDownLatch(1);
+    /**
+     * blocks until init is complete
+     */
+    private CountDownLatch initWaiter = new CountDownLatch(1);
 
     /**
      * importedFrom: which module imports this module causing it to load? if empty,
@@ -115,6 +148,7 @@ public class Module {
         this.langDef = langDef.get();
         this.path = path;
         this.preludes = preludes;
+        this.content = content;
 
         if (importedFrom.isPresent())
             this.dependents.add(importedFrom.get());
@@ -130,20 +164,11 @@ public class Module {
      * this must be called outside of useCache as running initialise can take a
      * while, we dont want to block useCache
      */
-    synchronized void ensureInitialised() {
-        if (isInitalised) {
-            if (initError.isPresent())
-                throw initError.get();
-
-            return;
-        }
-
-        if (isEnsureInitialisedRunning)
-            throw new UnsupportedOperationException("circular imports");
+    void initialise() {
+        if (phase != ModulePhase.INHERT)
+            throw new UnsupportedOperationException("multiple calls of initialise for the same module");
 
         try {
-            isEnsureInitialisedRunning = true;
-
             // apply preludes
             Map<String, Object> globalScope = new HashMap<>();
             ProxyObject globalScopeProxy = ProxyObject.fromMap(globalScope);
@@ -155,19 +180,208 @@ public class Module {
             initError = Optional.of(e);
             throw e;
         } finally {
-            isInitalised = true;
-            content = null;
+            switch (phase) {
+                case INITIALISING:
+                    phase = ModulePhase.ACTIVE;
+                    break;
+                case UNLOAD_WAITING_INIT:
+                    phase = ModulePhase.UNLOADING;
+                    break;
+                default:
+                    throw new RuntimeException(
+                            String.format("not possible to have state %s when done initialising", phase.toString()));
+            }
 
-            isEnsureInitialisedRunning = false;
+            initWaiter.countDown();
         }
     }
 
     /**
-     * wait for file to evaluate and returns exports
+     * used only by module.import from another module
      */
     Optional<Value> waitForExports() {
-        ensureInitialised();
+        switch (phase) {
+            case UNLOADING:
+            case UNLOAD_WAITING_INIT:
+                throw new UnsupportedOperationException("cannot wait for exports while unloading");
+            default:
+                break;
+        }
+        Utils.waitFor(initWaiter);
+        if (initError.isPresent())
+            throw initError.get();
+
         return exports;
+    }
+
+    /**
+     * DANGER: this should only be used by ModuleCache
+     *
+     * unloads module and triggers unload cascade
+     *
+     * at this stage, the module should've been already removed from ModuleCache
+     *
+     * this must be called outside of useCache as this can take a while,
+     * we dont want to block useCache
+     *
+     * note: a failed unload will not throw an exception
+     *
+     * note 2: this does not unlock the unload lock, you'll have to do it separately
+     */
+    void doUnloadCleanup() {
+        Utils.waitFor(initWaiter);
+        phase = ModulePhase.UNLOADING;
+
+        try {
+            onunload.ifPresent(Runnable::run);
+        } catch (RuntimeException e) {
+            // TODO: use the custom logger
+            JSCore.LOGGER.error(e.getMessage());
+        }
+
+        try {
+            ctx.close(true); // force interrupts
+        } catch (RuntimeException e) {
+            // TODO: use the custom logger
+            JSCore.LOGGER.error(e.getMessage());
+        }
+    }
+
+    /**
+     * this must be called outside of useCache as this can take a while,
+     * we dont want to block useCache
+     */
+    Value eval(String content) {
+        Utils.waitFor(initWaiter);
+        return evalWithoutWaiting(content);
+    }
+
+    /**
+     * eval without waiting logic, only to be used in eval and init
+     */
+    private synchronized Value evalWithoutWaiting(String content) {
+        try {
+            Source src = Source.newBuilder(this.langDef.id(), content, String.join("/", path)).build(); // this could
+                                                                                                        // cause IO
+            // exceptions
+            return ctx.eval(src);
+        } catch (IOException e) {
+            throw new RuntimeException(e); // TODO: make this less shitty
+        }
+    }
+
+    /**
+     * this should ONLY be used by lang specific modules
+     *
+     * import a file using a relative path, and apply preludes to the file
+     *
+     * if the file is already loaded, throws an error if prelude list mismatches
+     */
+    public Optional<Value> importRelative(String path, String[] preludeNames) throws IOException {
+        Path newPath = Path.of("/" + String.join("/", this.path)).getParent().resolve(path).normalize();
+        List<String> newPathChunks = StreamSupport.stream(newPath.spliterator(), false).map(Path::toString).toList();
+        return ModuleCache.getInstance().get(newPathChunks, preludeNames, Optional.of(this));
+    }
+
+    // stuff used by module cache to manage the cache DAG
+    boolean shouldUnload() {
+        return !explicitlyLoaded && dependents.isEmpty();
+    }
+
+    public String getName() {
+        return String.join("/", this.path);
+    }
+
+    void unsetExplicitlyLoaded() {
+        explicitlyLoaded = false;
+    }
+
+    void addDependent(List<String> path) {
+        dependents.add(path);
+    }
+
+    void startDependentUnloading(List<String> path) {
+        dependents.remove(path);
+        unloadingDependentsWaiter.countUp();
+    }
+
+    void removeDependentOnly(List<String> path) {
+        dependents.remove(path);
+    }
+
+    void endDependentUnloading() {
+        unloadingDependentsWaiter.countDown();
+    }
+
+    void addDependency(List<String> path) {
+        dependencies.add(path);
+    }
+
+    void removeDependency(List<String> path) {
+        dependencies.remove(path);
+    }
+
+    /**
+     * this is only to be used by ModuleCache to resolve the unload tree
+     *
+     * the set is immutable
+     */
+    Set<List<String>> getDependents() {
+        return Collections.unmodifiableSet(dependents);
+    }
+
+    boolean isDependencyOf(Optional<List<String>> path) {
+        if (path.isPresent())
+            return dependents.contains(path.get());
+        else
+            return isExplicitlyLoaded();
+    }
+
+    /**
+     * this is only to be used by ModuleCache to resolve the unload tree
+     *
+     * the set is immutable
+     */
+    Set<List<String>> getDependencies() {
+        return Collections.unmodifiableSet(dependencies);
+    }
+
+    /**
+     * this is only to be used by ModuleCache to resolve the unload tree
+     */
+    boolean isExplicitlyLoaded() {
+        return explicitlyLoaded;
+    }
+
+    /**
+     * mark this module as starting unloading
+     */
+    void startUnloading() {
+        if (this.phase == ModulePhase.UNLOADING)
+            throw new UnsupportedOperationException("startUnloading when the module is already being unloaded");
+
+        this.phase = ModulePhase.UNLOADING;
+    }
+
+    void doneUnloading() {
+        if (this.phase != ModulePhase.UNLOADING)
+            throw new UnsupportedOperationException("doneUnloading when the module is not being unloaded");
+        unloadWaiter.countDown();
+    }
+
+    void completeDependentUnloading() {
+        if (this.phase != ModulePhase.UNLOADING)
+            throw new UnsupportedOperationException("completeUnloading when the module is not being unloaded");
+
+        unloadingDependentsWaiter.countDown();
+    }
+
+    boolean preludeMatches(List<Prelude> other) {
+        // Prelude has no .equal, but this is correct
+        // Prelude with a specific name cannot be changed when a module using it is
+        // active
+        // TODO: ref count Prelude as well
+        return preludes.equals(other);
     }
 
     /**
@@ -198,202 +412,19 @@ public class Module {
         this.onunload = onunload;
     }
 
-    /**
-     * DANGER: this should only be used by ModuleCache
-     *
-     * unloads module and triggers unload cascade
-     *
-     * at this stage, the module should've been already removed from ModuleCache
-     *
-     * this must be called outside of useCache as this can take a while,
-     * we dont want to block useCache
-     *
-     * note: a failed unload will not throw an exception
-     *
-     * note 2: this does not unlock the unload lock, you'll have to do it separately
-     */
-    void doUnloadCleanup() {
-        try {
-            // wait for initialisation to complete so onunload is correct
-            // modules load/unload should appear atomic - either it is loaded or it is not
-            // not waiting for this
-            ensureInitialised();
-        } catch (RuntimeException e) {
-            // DONT CARE!
-        }
-
-        try {
-            onunload.ifPresent(Runnable::run);
-        } catch (RuntimeException e) {
-            // TODO: use the custom logger
-            JSCore.LOGGER.error(e.getMessage());
-        }
-
-        try {
-            ctx.close(true); // force interrupts
-        } catch (RuntimeException e) {
-            // TODO: use the custom logger
-            JSCore.LOGGER.error(e.getMessage());
-        }
+    ModulePhase getPhase() {
+        return phase;
     }
 
-    /**
-     * this must be called outside of useCache as this can take a while,
-     * we dont want to block useCache
-     */
-    Value eval(String content) {
-        ensureInitialised();
-        return evalWithoutWaiting(content);
+    void waitForInit() {
+        Utils.waitFor(initWaiter);
     }
 
-    /**
-     * eval without waiting for ensureInitialised
-     * this is intended to be used inside an ensureInitialised
-     */
-    private synchronized Value evalWithoutWaiting(String content) {
-        try {
-            Source src = Source.newBuilder(this.langDef.id(), content, String.join("/", path)).build(); // this could
-                                                                                                        // cause IO
-            // exceptions
-            return ctx.eval(src);
-        } catch (IOException e) {
-            throw new RuntimeException(e); // TODO: make this less shitty
-        }
+    void waitForUnload() {
+        Utils.waitFor(unloadWaiter);
     }
 
-    /**
-     * this should ONLY be used by lang specific modules
-     *
-     * import a file using a relative path, and apply preludes to the file
-     *
-     * if the file is already loaded, throws an error if prelude list mismatches
-     */
-    public Optional<Value> importRelative(String path, String[] preludeNames) throws IOException {
-        if (unloadTask.isPresent())
-            throw new UnsupportedOperationException("cannot run import during unload");
-
-        Path newPath = Path.of("/" + String.join("/", this.path)).getParent().resolve(path).normalize();
-        List<String> newPathChunks = StreamSupport.stream(newPath.spliterator(), false).map(Path::toString).toList();
-        return ModuleCache.getInstance().get(newPathChunks, preludeNames, Optional.of(this));
-    }
-
-    public String getName() {
-        return String.join("/", this.path);
-    }
-
-    // stuff used by module cache to manage the cache DAG
-    boolean shouldUnload() {
-        return !explicitlyLoaded && dependents.isEmpty();
-    }
-
-    void unsetExplicitlyLoaded() {
-        explicitlyLoaded = false;
-    }
-
-    void addDependent(List<String> path) {
-        dependents.add(path);
-    }
-
-    void removeDependent(List<String> path) {
-        dependents.remove(path);
-    }
-
-    void addDependency(List<String> path) {
-        dependencies.add(path);
-    }
-
-    void removeDependency(List<String> path) {
-        dependencies.remove(path);
-    }
-
-    /**
-     * this is only to be used by ModuleCache to resolve the unload tree
-     *
-     * the set is immutable
-     */
-    Set<List<String>> getDependents() {
-        return Collections.unmodifiableSet(dependents);
-    }
-
-    /**
-     * this is only to be used by ModuleCache to resolve the unload tree
-     *
-     * the set is immutable
-     */
-    Set<List<String>> getDependencies() {
-        return Collections.unmodifiableSet(dependencies);
-    }
-
-    /**
-     * this is only to be used by ModuleCache to resolve the unload tree
-     */
-    boolean isExplicitlyLoaded() {
-        return explicitlyLoaded;
-    }
-
-    void startUnloading() {
-        if (this.unloadTask.isPresent())
-            throw new UnsupportedOperationException("startUnloading when the module is already being unloaded");
-
-        this.unloadTask = Optional.of(new CountDownLatch(1));
-    }
-
-    void completeUnloading() {
-        if (unloadTask.isEmpty())
-            throw new UnsupportedOperationException("completeUnloading when the module is not being unloaded");
-
-        unloadTask.get().countDown();
-        unloadTask = Optional.empty();
-    }
-
-    /**
-     * returns true if you did wait for an unload
-     * returns false if it had been a noop
-     *
-     * DANGER! this needs to be run immediately
-     * if you wish to wait for it later, use waitForUnloadTask
-     */
-    boolean waitForUnload() {
-        if (unloadTask.isPresent()) {
-            try {
-                unloadTask.get().await();
-            } catch (InterruptedException e) {
-                // TODO: it might be, e.g. when the game stops, but we'll figure that out later
-                throw new RuntimeException("unloading shouldn't be interrupted", e);
-            }
-            return true;
-        } else
-            return false;
-    }
-
-    Optional<Runnable> waitForUnloadTask() {
-        if (unloadTask.isPresent()) {
-            CountDownLatch latch = unloadTask.get();
-            return Optional.of(() -> {
-                try {
-                    latch.await();
-                } catch (InterruptedException e) {
-                    // TODO: it might be, e.g. when the game stops, but we'll figure that out later
-                    throw new RuntimeException("unloading shouldn't be interrupted", e);
-                }
-            });
-        } else
-            return Optional.empty();
-    }
-
-    /**
-     * returns true if need to wait for an unload (an unloading job is ongoing)
-     * returns false otherwise
-     */
-    boolean needToWaitForUnload() {
-        return unloadTask.isPresent();
-    }
-
-    boolean preludeMatches(List<Prelude> other) {
-        // Prelude has no .equal, but this is correct
-        // Prelude with a specific name cannot be changed when a module using it is
-        // active
-        // TODO: ref count Prelude as well
-        return preludes.equals(other);
+    void waitForUnloadingDependents() {
+        Utils.waitFor(unloadingDependentsWaiter);
     }
 }
