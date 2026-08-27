@@ -118,9 +118,9 @@ public class Module {
 
     /**
      * blocks until the module has no more dependents (including the ones that are
-     * unloading)
+     * unloading, does not include explicitly loaded)
      */
-    private CounterLock unloadingDependentsWaiter = new CounterLock();
+    private CounterLock dependentsWaiter = new CounterLock(0, false);
     /**
      * blocks until the module is fully unloaded
      */
@@ -150,9 +150,10 @@ public class Module {
         this.preludes = preludes;
         this.content = content;
 
-        if (importedFrom.isPresent())
+        if (importedFrom.isPresent()) {
             this.dependents.add(importedFrom.get());
-        else
+            this.dependentsWaiter.countUp();
+        } else
             this.explicitlyLoaded = true;
     }
 
@@ -165,8 +166,17 @@ public class Module {
      * while, we dont want to block useCache
      */
     void initialise() {
-        if (phase != ModulePhase.INHERT)
-            throw new UnsupportedOperationException("multiple calls of initialise for the same module");
+        switch (phase) {
+            case UNLOADING:
+            case ACTIVE:
+            case INITIALISING:
+                throw new UnsupportedOperationException("multiple calls of initialise for the same module");
+            case INHERT:
+                phase = ModulePhase.INITIALISING;
+                break;
+            case UNLOAD_WAITING_INIT:
+                break;
+        }
 
         try {
             // apply preludes
@@ -236,14 +246,14 @@ public class Module {
             onunload.ifPresent(Runnable::run);
         } catch (RuntimeException e) {
             // TODO: use the custom logger
-            JSCore.LOGGER.error(e.getMessage());
+            JSCore.LOGGER.error(e.getMessage(), e);
         }
 
         try {
             ctx.close(true); // force interrupts
         } catch (RuntimeException e) {
             // TODO: use the custom logger
-            JSCore.LOGGER.error(e.getMessage());
+            JSCore.LOGGER.error(e.getMessage(), e);
         }
     }
 
@@ -298,19 +308,20 @@ public class Module {
 
     void addDependent(List<String> path) {
         dependents.add(path);
+        dependentsWaiter.countUp();
     }
 
     void startDependentUnloading(List<String> path) {
         dependents.remove(path);
-        unloadingDependentsWaiter.countUp();
     }
 
     void removeDependentOnly(List<String> path) {
         dependents.remove(path);
+        dependentsWaiter.countDown();
     }
 
     void endDependentUnloading() {
-        unloadingDependentsWaiter.countDown();
+        dependentsWaiter.countDown();
     }
 
     void addDependency(List<String> path) {
@@ -357,23 +368,24 @@ public class Module {
      * mark this module as starting unloading
      */
     void startUnloading() {
-        if (this.phase == ModulePhase.UNLOADING)
-            throw new UnsupportedOperationException("startUnloading when the module is already being unloaded");
-
-        this.phase = ModulePhase.UNLOADING;
+        switch (phase) {
+            case UNLOADING:
+            case UNLOAD_WAITING_INIT:
+                throw new UnsupportedOperationException("startUnloading called multiple times, which isn't possible");
+            case ACTIVE:
+                phase = ModulePhase.UNLOADING;
+                break;
+            case INHERT:
+            case INITIALISING:
+                phase = ModulePhase.UNLOAD_WAITING_INIT;
+                break;
+        }
     }
 
     void doneUnloading() {
         if (this.phase != ModulePhase.UNLOADING)
             throw new UnsupportedOperationException("doneUnloading when the module is not being unloaded");
         unloadWaiter.countDown();
-    }
-
-    void completeDependentUnloading() {
-        if (this.phase != ModulePhase.UNLOADING)
-            throw new UnsupportedOperationException("completeUnloading when the module is not being unloaded");
-
-        unloadingDependentsWaiter.countDown();
     }
 
     boolean preludeMatches(List<Prelude> other) {
@@ -424,7 +436,7 @@ public class Module {
         Utils.waitFor(unloadWaiter);
     }
 
-    void waitForUnloadingDependents() {
-        Utils.waitFor(unloadingDependentsWaiter);
+    void waitForAllDependentsToUnload() {
+        Utils.waitFor(dependentsWaiter);
     }
 }

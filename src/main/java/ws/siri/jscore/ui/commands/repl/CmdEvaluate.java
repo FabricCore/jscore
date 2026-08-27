@@ -35,6 +35,7 @@ public class CmdEvaluate {
         S src = context.getSource();
         String expression = context.getArgument("expression", String.class);
         Player player = source.getPlayer(src);
+        String playerName = player == null ? "Non-player" : player.getPlainTextName();
         String uuid = "REPL" + UUID.randomUUID().toString().substring(0, 8);
         Optional<Repl> repl = source.getFocusedRepl();
 
@@ -46,8 +47,7 @@ public class CmdEvaluate {
         }
 
         JSCore.LOGGER
-                .info(String.format("[%s] Started %s > %s : %s", uuid, repl.get().getName(), player.getName(),
-                        expression));
+                .info(String.format("[%s] Started %s > %s : %s", uuid, repl.get().getName(), playerName, expression));
 
         if (repl.get().isFresh())
             source.sendSuccess(context.getSource(),

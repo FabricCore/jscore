@@ -36,7 +36,7 @@ public class JSCoreConfig {
 
     private static JSCoreConfig load() {
         try {
-            Path configPath = FabricLoader.getInstance().getConfigDir().resolve("jscore/config.json");
+            Path configPath = FabricLoader.getInstance().getConfigDir().resolve("jscore/master.config.json");
             if (!Files.exists(configPath))
                 return new JSCoreConfig();
 

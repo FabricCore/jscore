@@ -42,7 +42,7 @@ public class JscLogger {
 
     public void log(Level level, String content) {
         // level < M_LEVEL
-        if (level.compareTo(M_LEVEL) < 0)
+        if (level.compareTo(M_LEVEL) > 0)
             return;
 
         clientLogger.ifPresent((handler) -> handler.accept(this.tags, level, content));

@@ -46,11 +46,12 @@ public class ModuleCache {
     private static class CreateModuleRes {
         private enum ResType {
             CREATED,
+            CACHE_HIT,
             WAIT_FOR_UNLOAD
         }
 
         public ResType resType;
-        public Module created;
+        public Module module;
         public Runnable waitForUnload;
 
         private CreateModuleRes() {
@@ -59,7 +60,14 @@ public class ModuleCache {
         public static CreateModuleRes created(Module created) {
             CreateModuleRes out = new CreateModuleRes();
             out.resType = ResType.CREATED;
-            out.created = created;
+            out.module = created;
+            return out;
+        }
+
+        public static CreateModuleRes cached(Module cached) {
+            CreateModuleRes out = new CreateModuleRes();
+            out.resType = ResType.CACHE_HIT;
+            out.module = cached;
             return out;
         }
 
@@ -181,7 +189,8 @@ public class ModuleCache {
             Optional<Module> requestedBy) {
         return useCache(cache -> {
             Module mod;
-            if (cache.containsKey(path)) {
+            final boolean inCache = cache.containsKey(path);
+            if (inCache) {
                 // rechecks as there may be a time difference between it has last been checked
                 // in get
                 // this block of code must also be replicated in get
@@ -193,19 +202,22 @@ public class ModuleCache {
 
                 if (!mod.preludeMatches(filePreludes))
                     throw new IllegalArgumentException("prelude list does not match previous calls");
+
+                if (requestedBy.isPresent()) {
+                    requestedBy.get().addDependency(path);
+                    mod.addDependent(requestedBy.get().getPath());
+                } else
+                    throw new IllegalArgumentException("pinning an already loaded file is not (yet) a thing");
+
+                return CreateModuleRes.cached(mod);
             } else {
                 mod = new Module(path, filePreludes, content, requestedBy.map(Module::getPath));
+                if (requestedBy.isPresent())
+                    requestedBy.get().addDependency(path);
                 cache.put(path, mod);
+
+                return CreateModuleRes.created(mod);
             }
-
-            // even if the module content is faulty causing an initialisation fail
-            // it is still considered as a dependency
-            if (requestedBy.isPresent())
-                mod.addDependent(requestedBy.get().getPath());
-
-            requestedBy.ifPresent(m -> m.addDependency(path));
-
-            return CreateModuleRes.created(mod);
         });
     }
 
@@ -312,7 +324,11 @@ public class ModuleCache {
             CreateModuleRes res = createModule(path, filePreludes, content, requestedBy);
             switch (res.resType) {
                 case CREATED:
-                    resolvedModule = Optional.of(res.created);
+                    resolvedModule = Optional.of(res.module);
+                    resolvedModule.get().initialise();
+                    break;
+                case CACHE_HIT:
+                    resolvedModule = Optional.of(res.module);
                     break;
                 case WAIT_FOR_UNLOAD:
                     res.waitForUnload.run();
@@ -320,7 +336,6 @@ public class ModuleCache {
             }
         }
 
-        resolvedModule.get().initialise();
         return resolvedModule.get().waitForExports();
     }
 
@@ -344,13 +359,13 @@ public class ModuleCache {
             // unblock
             // TODO: alternative way: run everything in parallel
             unloadableOrdered.forEach(unloadable -> {
-                unloadable.waitForUnloadingDependents();
+                unloadable.waitForAllDependentsToUnload();
                 unloadable.doUnloadCleanup();
 
                 useCache(cache -> {
                     cache.remove(unloadable.getPath());
                     unloadable.getDependencies().forEach(depPath -> {
-                        cache.get(depPath).completeDependentUnloading();
+                        cache.get(depPath).endDependentUnloading();
                     });
                     return null;
                 });
@@ -371,6 +386,7 @@ public class ModuleCache {
             throw new RuntimeException(
                     "how lucky must you be to hit this branch?! its an astronomically small chance!");
 
-        return new Repl(createRes.created);
+        createRes.module.initialise();
+        return new Repl(createRes.module);
     }
 }

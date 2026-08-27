@@ -22,5 +22,11 @@ public class JSCoreClient implements ClientModInitializer {
 
             JSCore.loadEntryPointIfExists(clientEntryPoint);
         });
+
+        ClientLifecycleEvents.CLIENT_STOPPING.register((client) -> {
+            JSCoreConfig.ensureInitialised();
+            List<String> clientEntryPoint = Arrays.asList(JSCoreConfig.getInstance().getClientEntryPoint().split("/"));
+            JSCore.unloadEntryPointIfExists(clientEntryPoint);
+        });
     }
 }

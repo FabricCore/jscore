@@ -11,65 +11,50 @@ public class Utils {
         return (Optional<U>) value;
     }
 
-    public static class BinaryLatch {
-        private boolean isLocked = true;
-        private CountDownLatch lock = new CountDownLatch(1);
-        private Lock countdownLatchAccesMutex = new ReentrantLock();
-
-        public void countDown() {
-            countdownLatchAccesMutex.lock();
-            lock.countDown();
-            isLocked = false;
-            countdownLatchAccesMutex.unlock();
-        }
-
-        public boolean isLocked() {
-            countdownLatchAccesMutex.lock();
-            boolean out = isLocked;
-            countdownLatchAccesMutex.unlock();
-            return out;
-        }
-
-        public void await() throws InterruptedException {
-            lock.await();
-        }
-    }
-
     /**
      * lock that blocks only when count is nonzero
      */
     public static class CounterLock {
-        private int count = 0;
+        private int count;
         private Optional<CountDownLatch> lock = Optional.empty();
-        private Lock countdownLatchAccesMutex = new ReentrantLock();
 
-        private void updateWithCount(int count) {
-            countdownLatchAccesMutex.lock();
+        private boolean throwOnNegative;
+
+        public CounterLock(int count, boolean throwOnNegative) {
+            this.count = count;
+            this.throwOnNegative = throwOnNegative;
+            if (count != 0)
+                updateWithCount(count);
+        }
+
+        private synchronized void updateWithCount(int count) {
+            if (count < 0 && throwOnNegative)
+                throw new UnsupportedOperationException("count is negative");
+
             if (count == 0) {
-                lock.get().countDown();
-                lock = Optional.empty();
+                if (lock.isPresent()) {
+                    lock.get().countDown();
+                    lock = Optional.empty();
+                }
             } else if (lock.isEmpty()) {
-                lock = Optional.of(new CountDownLatch(1));
+                lock = Optional.of(new CountDownLatch(count));
             }
-            countdownLatchAccesMutex.unlock();
         }
 
-        public void countUp() {
-            countdownLatchAccesMutex.lock();
+        public synchronized void countUp() {
             updateWithCount(++count);
-            countdownLatchAccesMutex.unlock();
         }
 
-        public void countDown() {
-            countdownLatchAccesMutex.lock();
+        public synchronized void countDown() {
             updateWithCount(--count);
-            countdownLatchAccesMutex.unlock();
+        }
+
+        private synchronized Optional<CountDownLatch> getLock() {
+            return this.lock.map(l -> l);
         }
 
         public void await() throws InterruptedException {
-            countdownLatchAccesMutex.lock();
-            Optional<CountDownLatch> lock = this.lock.map(l -> l);
-            countdownLatchAccesMutex.unlock();
+            Optional<CountDownLatch> lock = getLock();
             if (lock.isPresent())
                 lock.get().await();
         }
