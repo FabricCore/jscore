@@ -10,7 +10,7 @@ public class Errors {
         }
 
         @Override
-        public String toString() {
+        public String getMessage() {
             return String.format("expects %s, got %s", expects, got);
         }
     }

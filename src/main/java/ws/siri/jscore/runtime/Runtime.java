@@ -1,5 +1,6 @@
 package ws.siri.jscore.runtime;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -14,22 +15,24 @@ public class Runtime {
     /**
      * null : before getInstance() is first ran
      */
-    private static Runtime instance = null;
+    private static volatile Runtime instance = null;
     private static Set<LangDef> supportedLanguages = new HashSet<>();
 
-    private Engine engine;
+    private final Engine engine;
     /**
      * <file ext, lang ID>
      */
-    private Map<String, LangDef> langExts;
+    private final Map<String, LangDef> langExts;
     /**
      * <lang ID, lang def>
      */
-    private Map<String, LangDef> langDefs;
+    private final Map<String, LangDef> langDefs;
 
-    public static void registerSupportedLanguage(LangDef langDef) {
+    public static synchronized void registerSupportedLanguage(LangDef langDef) {
         if (instance != null)
             throw new UnsupportedOperationException("can only be called before getInstance() is first used");
+        if(langDef.exts().length == 0)
+            throw new IllegalArgumentException("langDef must support at least one extension");
 
         supportedLanguages.add(langDef);
     }
@@ -74,6 +77,6 @@ public class Runtime {
      * <lang ID, lang def>
      */
     public Map<String, LangDef> getAllLangDefs() {
-        return langDefs;
+        return Collections.unmodifiableMap(langDefs);
     }
 }

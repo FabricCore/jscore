@@ -42,7 +42,7 @@ public class CmdEvaluate {
         if (repl.isEmpty()) {
             JSCore.LOGGER.error(String.format("[%s] Error (No language runtime registered)", uuid));
             source.sendFailure(context.getSource(), Component
-                    .literal(String.format("Could not start a REPL because no language runtime has been loaded.")));
+                    .literal("Could not start a REPL because no language runtime has been loaded."));
             return 0;
         }
 

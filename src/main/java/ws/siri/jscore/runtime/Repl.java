@@ -61,7 +61,7 @@ public class Repl {
         if (lang.isEmpty())
             return Optional.empty();
 
-        return Optional.of(ModuleCache.getInstance().spawnRepl(lang.get().id(), new String[0]));
+        return Optional.of(ModuleCache.getInstance().spawnRepl(lang.get().exts()[0], new String[0]));
     }
 
     public static synchronized Optional<Repl> getFocusedClient() {

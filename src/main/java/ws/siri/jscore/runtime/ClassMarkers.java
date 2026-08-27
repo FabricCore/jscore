@@ -13,7 +13,7 @@ public class ClassMarkers {
         String id();
 
         /**
-         * Anticipated file extensions
+         * Anticipated file extensions, must be nonempty, and the first item is the default ext
          */
         String[] exts();
 

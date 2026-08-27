@@ -15,7 +15,7 @@ public class JscLogger {
     private static final Logger LOGGER = LoggerFactory.getLogger(JSCore.MOD_ID);
 
     private static final Level M_LEVEL = Level.INFO;
-    private static Optional<TriConsumer<String[], Level, String>> clientLogger;
+    private static Optional<TriConsumer<String[], Level, String>> clientLogger = Optional.empty();
 
     public static void registerClientLogger(TriConsumer<String[], Level, String> handler) {
         if (clientLogger.isPresent())

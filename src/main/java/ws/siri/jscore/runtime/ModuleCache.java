@@ -22,6 +22,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import ws.siri.jscore.JSCore;
 import ws.siri.jscore.runtime.ClassMarkers.LangDef;
 import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
+import ws.siri.jscore.runtime.Module.ModulePhase;
 
 public class ModuleCache {
     private static ModuleCache instance = new ModuleCache();
@@ -34,6 +35,7 @@ public class ModuleCache {
     private ThreadLocal<Integer> threadUnloadingTaskCount = ThreadLocal.withInitial(() -> 0);
 
     // TODO: also reference counts this
+    // TODO: implement this later
     public class Prelude {
         private LangDef langDef;
         private BiConsumer<ProxyObject, LangSpecificModule> preludeFunction;
@@ -197,7 +199,7 @@ public class ModuleCache {
                 mod = cache.get(path);
 
                 // retry if module is currently being unloaded
-                if (mod.getPhase().unloadRequested())
+                if (mod.usePhase(ModulePhase::unloadRequested))
                     return CreateModuleRes.waitForUnload(() -> mod.waitForUnload());
 
                 if (!mod.preludeMatches(filePreludes))
@@ -294,7 +296,7 @@ public class ModuleCache {
                 // this block of code must also be replicated in createModule
                 Module module = cache.get(path);
 
-                if (module.getPhase().unloadRequested())
+                if (module.usePhase(ModulePhase::unloadRequested))
                     return Optional.empty();
 
                 if (!module.preludeMatches(filePreludes))
@@ -387,6 +389,7 @@ public class ModuleCache {
                     "how lucky must you be to hit this branch?! its an astronomically small chance!");
 
         createRes.module.initialise();
+        createRes.module.getInitError().ifPresent(e -> JSCore.LOGGER.error("spawnRepl init", e.getMessage(), e));
         return new Repl(createRes.module);
     }
 }

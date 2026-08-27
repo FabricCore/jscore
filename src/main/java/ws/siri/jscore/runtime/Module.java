@@ -10,6 +10,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import java.util.stream.StreamSupport;
 
 import org.apache.commons.io.FilenameUtils;
@@ -55,7 +58,7 @@ public class Module {
         /**
          * default state when created
          */
-        INHERT,
+        INERT,
         /**
          * an initialisation has been request
          */
@@ -87,13 +90,13 @@ public class Module {
     /**
      * current state of the module
      */
-    private volatile ModulePhase phase = ModulePhase.INHERT;
+    private ModulePhase __phase = ModulePhase.INERT;
     /**
      * evaluation error on initialisation
      */
     private volatile Optional<RuntimeException> initError = Optional.empty();
 
-    private Context ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
+    private Context ctx;
     private Optional<Value> exports = Optional.empty();
     private Optional<Runnable> onunload = Optional.empty();
 
@@ -110,25 +113,25 @@ public class Module {
     /**
      * set of modules this module imports
      */
-    private Set<List<String>> dependencies = ConcurrentHashMap.newKeySet();
+    private final Set<List<String>> dependencies = ConcurrentHashMap.newKeySet();
     /**
      * set of modules that imports this module
      */
-    private Set<List<String>> dependents = ConcurrentHashMap.newKeySet();
+    private final Set<List<String>> dependents = ConcurrentHashMap.newKeySet();
 
     /**
      * blocks until the module has no more dependents (including the ones that are
      * unloading, does not include explicitly loaded)
      */
-    private CounterLock dependentsWaiter = new CounterLock(0, false);
+    private final CounterLock dependentsWaiter = new CounterLock(0, false);
     /**
      * blocks until the module is fully unloaded
      */
-    private CountDownLatch unloadWaiter = new CountDownLatch(1);
+    private final CountDownLatch unloadWaiter = new CountDownLatch(1);
     /**
      * blocks until init is complete
      */
-    private CountDownLatch initWaiter = new CountDownLatch(1);
+    private final CountDownLatch initWaiter = new CountDownLatch(1);
 
     /**
      * importedFrom: which module imports this module causing it to load? if empty,
@@ -157,6 +160,20 @@ public class Module {
             this.explicitlyLoaded = true;
     }
 
+    /**
+     * lock to make sure only one copy of usePhase is active at a time
+     */
+    private Lock phaseLock = new ReentrantLock();
+
+    <T> T usePhase(Function<ModulePhase, T> f) {
+        try {
+            phaseLock.lock();
+            return f.apply(__phase);
+        } finally {
+            phaseLock.unlock();
+        }
+    }
+
     public List<String> getPath() {
         return path;
     }
@@ -166,19 +183,24 @@ public class Module {
      * while, we dont want to block useCache
      */
     void initialise() {
-        switch (phase) {
-            case UNLOADING:
-            case ACTIVE:
-            case INITIALISING:
-                throw new UnsupportedOperationException("multiple calls of initialise for the same module");
-            case INHERT:
-                phase = ModulePhase.INITIALISING;
-                break;
-            case UNLOAD_WAITING_INIT:
-                break;
-        }
+        usePhase((phase) -> {
+            switch (phase) {
+                case UNLOADING:
+                case ACTIVE:
+                case INITIALISING:
+                    throw new UnsupportedOperationException("multiple calls of initialise for the same module");
+                case INERT:
+                    __phase = ModulePhase.INITIALISING;
+                    break;
+                case UNLOAD_WAITING_INIT:
+                    break;
+            }
+            return null;
+        });
 
         try {
+            ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
+
             // apply preludes
             Map<String, Object> globalScope = new HashMap<>();
             ProxyObject globalScopeProxy = ProxyObject.fromMap(globalScope);
@@ -188,20 +210,26 @@ public class Module {
             this.evalWithoutWaiting(content);
         } catch (RuntimeException e) {
             initError = Optional.of(e);
-            throw e;
-        } finally {
-            switch (phase) {
-                case INITIALISING:
-                    phase = ModulePhase.ACTIVE;
-                    break;
-                case UNLOAD_WAITING_INIT:
-                    phase = ModulePhase.UNLOADING;
-                    break;
-                default:
-                    throw new RuntimeException(
-                            String.format("not possible to have state %s when done initialising", phase.toString()));
-            }
+        }
 
+        try {
+            usePhase(phase -> {
+                switch (phase) {
+                    case INITIALISING:
+                        __phase = ModulePhase.ACTIVE;
+                        break;
+                    case UNLOAD_WAITING_INIT:
+                        __phase = ModulePhase.UNLOADING;
+                        break;
+                    default:
+                        throw new RuntimeException(
+                                String.format("not possible to have state %s when done initialising",
+                                        phase.toString()));
+                }
+
+                return null;
+            });
+        } finally {
             initWaiter.countDown();
         }
     }
@@ -210,13 +238,18 @@ public class Module {
      * used only by module.import from another module
      */
     Optional<Value> waitForExports() {
-        switch (phase) {
-            case UNLOADING:
-            case UNLOAD_WAITING_INIT:
-                throw new UnsupportedOperationException("cannot wait for exports while unloading");
-            default:
-                break;
-        }
+        usePhase(phase -> {
+            switch (phase) {
+                case UNLOADING:
+                case UNLOAD_WAITING_INIT:
+                    throw new UnsupportedOperationException("cannot wait for exports while unloading");
+                default:
+                    break;
+            }
+
+            return null;
+        });
+
         Utils.waitFor(initWaiter);
         if (initError.isPresent())
             throw initError.get();
@@ -240,7 +273,11 @@ public class Module {
      */
     void doUnloadCleanup() {
         Utils.waitFor(initWaiter);
-        phase = ModulePhase.UNLOADING;
+
+        usePhase(phase -> {
+            __phase = ModulePhase.UNLOADING;
+            return null;
+        });
 
         try {
             onunload.ifPresent(Runnable::run);
@@ -307,8 +344,8 @@ public class Module {
     }
 
     void addDependent(List<String> path) {
-        dependents.add(path);
-        dependentsWaiter.countUp();
+        if (dependents.add(path))
+            dependentsWaiter.countUp();
     }
 
     void startDependentUnloading(List<String> path) {
@@ -330,6 +367,10 @@ public class Module {
 
     void removeDependency(List<String> path) {
         dependencies.remove(path);
+    }
+
+    Optional<RuntimeException> getInitError() {
+        return initError;
     }
 
     /**
@@ -368,22 +409,27 @@ public class Module {
      * mark this module as starting unloading
      */
     void startUnloading() {
-        switch (phase) {
-            case UNLOADING:
-            case UNLOAD_WAITING_INIT:
-                throw new UnsupportedOperationException("startUnloading called multiple times, which isn't possible");
-            case ACTIVE:
-                phase = ModulePhase.UNLOADING;
-                break;
-            case INHERT:
-            case INITIALISING:
-                phase = ModulePhase.UNLOAD_WAITING_INIT;
-                break;
-        }
+        usePhase(phase -> {
+            switch (phase) {
+                case UNLOADING:
+                case UNLOAD_WAITING_INIT:
+                    throw new UnsupportedOperationException(
+                            "startUnloading called multiple times, which isn't possible");
+                case ACTIVE:
+                    __phase = ModulePhase.UNLOADING;
+                    break;
+                case INERT:
+                case INITIALISING:
+                    __phase = ModulePhase.UNLOAD_WAITING_INIT;
+                    break;
+            }
+
+            return null;
+        });
     }
 
     void doneUnloading() {
-        if (this.phase != ModulePhase.UNLOADING)
+        if (usePhase(p -> p) != ModulePhase.UNLOADING)
             throw new UnsupportedOperationException("doneUnloading when the module is not being unloaded");
         unloadWaiter.countDown();
     }
@@ -422,10 +468,6 @@ public class Module {
      */
     public void setOnUnloadInternal(Optional<Runnable> onunload) {
         this.onunload = onunload;
-    }
-
-    ModulePhase getPhase() {
-        return phase;
     }
 
     void waitForInit() {

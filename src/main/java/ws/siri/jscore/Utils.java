@@ -2,15 +2,8 @@ package ws.siri.jscore;
 
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 public class Utils {
-    @SuppressWarnings("unchecked")
-    public static <T, U> Optional<U> dangerouslyCastOptional(Optional<T> value) {
-        return (Optional<U>) value;
-    }
-
     /**
      * lock that blocks only when count is nonzero
      */
@@ -37,7 +30,7 @@ public class Utils {
                     lock = Optional.empty();
                 }
             } else if (lock.isEmpty()) {
-                lock = Optional.of(new CountDownLatch(count));
+                lock = Optional.of(new CountDownLatch(1));
             }
         }
 

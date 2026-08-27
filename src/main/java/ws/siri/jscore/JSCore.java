@@ -46,6 +46,7 @@ public class JSCore implements ModInitializer {
     public void onInitialize() {
         RegisterServerCmds.register();
 
+        // TODO: for now, script crashing crashes the server/client, fix that later
         ServerLifecycleEvents.SERVER_STARTING.register((server) -> {
             Runtime.initialise();
             JSCoreConfig.ensureInitialised();

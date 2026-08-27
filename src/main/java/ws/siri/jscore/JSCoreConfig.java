@@ -34,6 +34,7 @@ public class JSCoreConfig {
     private JSCoreConfig() {
     }
 
+    // TODO: do error handling later, for now assume all JSONs are as expected
     private static JSCoreConfig load() {
         try {
             Path configPath = FabricLoader.getInstance().getConfigDir().resolve("jscore/master.config.json");
