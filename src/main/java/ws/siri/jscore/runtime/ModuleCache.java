@@ -190,6 +190,7 @@ public class ModuleCache {
     private CreateModuleRes createModule(List<String> path, List<Prelude> filePreludes, String content,
             Optional<Module> requestedBy) {
         return useCache(cache -> {
+            requestedBy.ifPresent(Module::assertAllowImport);
             Module mod;
             final boolean inCache = cache.containsKey(path);
             if (inCache) {
@@ -283,6 +284,10 @@ public class ModuleCache {
      * the module
      *
      * if requsetedBy is empty, the path MUST be a path that is not in cache!
+     *
+     * please avoid doing weird shit before i figure out how to detect weird shit
+     *
+     * an onunload function for now should never cause any imports in any way
      */
     public Optional<Value> get(List<String> path, String[] preludeNames, Optional<Module> requestedBy)
             throws IOException {
@@ -292,6 +297,8 @@ public class ModuleCache {
         List<Prelude> filePreludes = getPreludes(preludeNames);
 
         Optional<Module> cacheHit = useCache(cache -> {
+            requestedBy.ifPresent(Module::assertAllowImport);
+
             if (cache.containsKey(path)) {
                 // this block of code must also be replicated in createModule
                 Module module = cache.get(path);

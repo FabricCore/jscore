@@ -85,6 +85,10 @@ public class Module {
         public boolean unloadRequested() {
             return this == UNLOADING || this == UNLOAD_WAITING_INIT;
         }
+
+        public boolean allowImport() {
+            return this != UNLOADING;
+        }
     }
 
     /**
@@ -96,7 +100,12 @@ public class Module {
      */
     private volatile Optional<RuntimeException> initError = Optional.empty();
 
-    private Context ctx;
+    private Context __ctx;
+
+    private synchronized <T> T useCtx(Function<Context, T> f) {
+        return f.apply(__ctx);
+    }
+
     private Optional<Value> exports = Optional.empty();
     private Optional<Runnable> onunload = Optional.empty();
 
@@ -199,15 +208,19 @@ public class Module {
         });
 
         try {
-            ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
+            useCtx(ctx -> {
+                __ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
 
-            // apply preludes
-            Map<String, Object> globalScope = new HashMap<>();
-            ProxyObject globalScopeProxy = ProxyObject.fromMap(globalScope);
-            preludes.forEach(prelude -> prelude.apply(globalScopeProxy, this));
-            globalScope.forEach((key, value) -> ctx.getBindings(this.langDef.id()).putMember(key, value));
-            ctx.getBindings(this.langDef.id()).putMember("module", this.langDef.wrapModule(this));
-            this.evalWithoutWaiting(content);
+                // apply preludes
+                Map<String, Object> globalScope = new HashMap<>();
+                ProxyObject globalScopeProxy = ProxyObject.fromMap(globalScope);
+                preludes.forEach(prelude -> prelude.apply(globalScopeProxy, this));
+                globalScope.forEach((key, value) -> __ctx.getBindings(this.langDef.id()).putMember(key, value));
+                __ctx.getBindings(this.langDef.id()).putMember("module", this.langDef.wrapModule(this));
+                this.evalWithoutWaiting(content);
+
+                return null;
+            });
         } catch (RuntimeException e) {
             initError = Optional.of(e);
         }
@@ -287,7 +300,10 @@ public class Module {
         }
 
         try {
-            ctx.close(true); // force interrupts
+            useCtx(ctx -> {
+                ctx.close(true);
+                return null;
+            }); // force interrupts
         } catch (RuntimeException e) {
             // TODO: use the custom logger
             JSCore.LOGGER.error(e.getMessage(), e);
@@ -306,12 +322,12 @@ public class Module {
     /**
      * eval without waiting logic, only to be used in eval and init
      */
-    private synchronized Value evalWithoutWaiting(String content) {
+    private Value evalWithoutWaiting(String content) {
         try {
             Source src = Source.newBuilder(this.langDef.id(), content, String.join("/", path)).build(); // this could
                                                                                                         // cause IO
             // exceptions
-            return ctx.eval(src);
+            return useCtx(ctx -> ctx.eval(src));
         } catch (IOException e) {
             throw new RuntimeException(e); // TODO: make this less shitty
         }
@@ -480,5 +496,14 @@ public class Module {
 
     void waitForAllDependentsToUnload() {
         Utils.waitFor(dependentsWaiter);
+    }
+
+    void assertAllowImport() {
+        usePhase(phase -> {
+            if (!phase.allowImport())
+                throw new UnsupportedOperationException(String.format("importing is not allowed in phase %s", phase));
+
+            return null;
+        });
     }
 }
