@@ -100,10 +100,20 @@ public class Module {
      */
     private volatile Optional<RuntimeException> initError = Optional.empty();
 
+    /**
+     * lock to make sure only one copy of useCtx is active at a time
+     */
+    private Lock ctxLock = new ReentrantLock();
+
     private Context __ctx;
 
-    private synchronized <T> T useCtx(Function<Context, T> f) {
-        return f.apply(__ctx);
+    private <T> T useCtx(Function<Context, T> f) {
+        ctxLock.lock();
+        try {
+            return f.apply(__ctx);
+        } finally {
+            ctxLock.unlock();
+        }
     }
 
     private Optional<Value> exports = Optional.empty();
@@ -175,8 +185,8 @@ public class Module {
     private Lock phaseLock = new ReentrantLock();
 
     <T> T usePhase(Function<ModulePhase, T> f) {
+        phaseLock.lock();
         try {
-            phaseLock.lock();
             return f.apply(__phase);
         } finally {
             phaseLock.unlock();
