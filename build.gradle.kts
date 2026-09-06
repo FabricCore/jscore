@@ -102,3 +102,17 @@ publishing {
 		// retrieving dependencies.
 	}
 }
+
+publishing {
+  repositories {
+    maven {
+      name = "siriReposilite"
+      url = uri("https://maven.siri.ws/releases")
+      credentials(PasswordCredentials::class)
+      authentication {
+        create<BasicAuthentication>("basic")
+      }
+    }
+  }
+}
+
