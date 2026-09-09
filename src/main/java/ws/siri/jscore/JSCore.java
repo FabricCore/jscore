@@ -32,7 +32,7 @@ public class JSCore implements ModInitializer {
 
         try {
             ModuleCache.getInstance()
-                    .get(path, new String[0], Optional.empty());
+                    .get(path, List.of(), Optional.empty());
         } catch (IOException e) {
             JSCore.LOGGER.error(e.toString()); // TODO: be less ridiculous
         }

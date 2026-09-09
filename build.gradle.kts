@@ -100,19 +100,13 @@ publishing {
 		// Notice: This block does NOT have the same function as the block in the top level.
 		// The repositories here will be used for publishing your artifact, not for
 		// retrieving dependencies.
+        maven {
+            name = "siriReposilite"
+            url = uri("https://maven.siri.ws/releases")
+            credentials(PasswordCredentials::class)
+            authentication {
+                create<BasicAuthentication>("basic")
+            }
+        }
 	}
 }
-
-publishing {
-  repositories {
-    maven {
-      name = "siriReposilite"
-      url = uri("https://maven.siri.ws/releases")
-      credentials(PasswordCredentials::class)
-      authentication {
-        create<BasicAuthentication>("basic")
-      }
-    }
-  }
-}
-

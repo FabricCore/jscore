@@ -6,12 +6,14 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.stream.StreamSupport;
 
@@ -25,7 +27,8 @@ import ws.siri.jscore.JSCore;
 import ws.siri.jscore.Utils;
 import ws.siri.jscore.Utils.CounterLock;
 import ws.siri.jscore.runtime.ClassMarkers.LangDef;
-import ws.siri.jscore.runtime.ModuleCache.Prelude;
+import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
+import ws.siri.jscore.runtime.ClassMarkers.Prelude;
 
 /**
  * the module object should never be directly accessible, currently it is a
@@ -86,6 +89,9 @@ public class Module {
             return this == UNLOADING || this == UNLOAD_WAITING_INIT;
         }
 
+        /**
+         * whether the module is allowed to import other modules
+         */
         public boolean allowImport() {
             return this != UNLOADING;
         }
@@ -169,7 +175,7 @@ public class Module {
 
         this.langDef = langDef.get();
         this.path = path;
-        this.preludes = preludes;
+        this.preludes = List.copyOf(preludes);
         this.content = content;
 
         if (importedFrom.isPresent()) {
@@ -343,6 +349,11 @@ public class Module {
         }
     }
 
+    private List<String> resolveRelative(String path) {
+        Path newPath = Path.of("/" + String.join("/", this.path)).getParent().resolve(path).normalize();
+        return StreamSupport.stream(newPath.spliterator(), false).map(Path::toString).toList();
+    }
+
     /**
      * this should ONLY be used by lang specific modules
      *
@@ -350,10 +361,12 @@ public class Module {
      *
      * if the file is already loaded, throws an error if prelude list mismatches
      */
-    public Optional<Value> importRelative(String path, String[] preludeNames) throws IOException {
-        Path newPath = Path.of("/" + String.join("/", this.path)).getParent().resolve(path).normalize();
-        List<String> newPathChunks = StreamSupport.stream(newPath.spliterator(), false).map(Path::toString).toList();
-        return ModuleCache.getInstance().get(newPathChunks, preludeNames, Optional.of(this));
+    public Optional<Value> importRelative(String path, List<Prelude> preludes) throws IOException {
+        return ModuleCache.getInstance().get(resolveRelative(path), preludes, Optional.of(this));
+    }
+
+    public void unimportRelative(String path) {
+        ModuleCache.getInstance().unimportModule(resolveRelative(path), Optional.of(this));
     }
 
     // stuff used by module cache to manage the cache DAG
@@ -461,10 +474,6 @@ public class Module {
     }
 
     boolean preludeMatches(List<Prelude> other) {
-        // Prelude has no .equal, but this is correct
-        // Prelude with a specific name cannot be changed when a module using it is
-        // active
-        // TODO: ref count Prelude as well
         return preludes.equals(other);
     }
 
@@ -496,6 +505,10 @@ public class Module {
         this.onunload = onunload;
     }
 
+    public Prelude createPrelude(BiConsumer<ProxyObject, LangSpecificModule> handler) {
+        return new Prelude(this, handler);
+    }
+
     void waitForInit() {
         Utils.waitFor(initWaiter);
     }
@@ -515,5 +528,24 @@ public class Module {
 
             return null;
         });
+    }
+
+    LangDef getLangDef() {
+        return langDef;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (!(obj instanceof Module))
+            return false;
+
+        Module other = (Module) obj;
+        return this.getPath().equals(other.getPath()) && this.langDef.id().equals(other.langDef.id())
+                && this.useCtx(c -> c).equals(other.useCtx(c -> c));
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(this.getPath(), this.langDef.id(), useCtx(c -> c));
     }
 }

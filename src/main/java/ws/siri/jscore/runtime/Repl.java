@@ -3,6 +3,7 @@ package ws.siri.jscore.runtime;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -61,7 +62,7 @@ public class Repl {
         if (lang.isEmpty())
             return Optional.empty();
 
-        return Optional.of(ModuleCache.getInstance().spawnRepl(lang.get().exts()[0], new String[0]));
+        return Optional.of(ModuleCache.getInstance().spawnRepl(lang.get().exts()[0], List.of()));
     }
 
     public static synchronized Optional<Repl> getFocusedClient() {

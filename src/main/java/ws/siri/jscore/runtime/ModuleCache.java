@@ -4,24 +4,19 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import org.graalvm.polyglot.Value;
-import org.graalvm.polyglot.proxy.ProxyObject;
 
 import net.fabricmc.loader.api.FabricLoader;
 import ws.siri.jscore.JSCore;
-import ws.siri.jscore.runtime.ClassMarkers.LangDef;
-import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
+import ws.siri.jscore.runtime.ClassMarkers.Prelude;
 import ws.siri.jscore.runtime.Module.ModulePhase;
 
 public class ModuleCache {
@@ -33,17 +28,6 @@ public class ModuleCache {
      * unload inside it
      */
     private ThreadLocal<Integer> threadUnloadingTaskCount = ThreadLocal.withInitial(() -> 0);
-
-    // TODO: also reference counts this
-    // TODO: implement this later
-    public class Prelude {
-        private LangDef langDef;
-        private BiConsumer<ProxyObject, LangSpecificModule> preludeFunction;
-
-        public void apply(ProxyObject globalScope, Module module) {
-            preludeFunction.accept(globalScope, langDef.wrapModule(module));
-        }
-    }
 
     private static class CreateModuleRes {
         private enum ResType {
@@ -81,11 +65,6 @@ public class ModuleCache {
         }
     }
 
-    /**
-     * (module: Module, scope object: Record<string, any>): void
-     */
-    private Map<String, Prelude> preludes = new ConcurrentHashMap<>();
-
     private ModuleCache() {
     }
 
@@ -115,16 +94,6 @@ public class ModuleCache {
      */
     private synchronized <T> T useCache(Function<Map<List<String>, Module>, T> consumer) {
         return consumer.apply(__cache);
-    }
-
-    private List<Prelude> getPreludes(String[] preludeNames) {
-        return Arrays.stream(preludeNames)
-                .map(prelude -> {
-                    if (preludes.containsKey(prelude)) {
-                        return preludes.get(prelude);
-                    } else
-                        throw new UnsupportedOperationException(String.format("could not find prelude %s", prelude));
-                }).toList();
     }
 
     private Path getModulePath(List<String> path) {
@@ -204,7 +173,8 @@ public class ModuleCache {
                     return CreateModuleRes.waitForUnload(() -> mod.waitForUnload());
 
                 if (!mod.preludeMatches(filePreludes))
-                    throw new IllegalArgumentException("prelude list does not match previous calls");
+                    throw new IllegalArgumentException(
+                            String.format("prelude list for %s does not match previous calls", mod.getName()));
 
                 if (requestedBy.isPresent()) {
                     requestedBy.get().addDependency(path);
@@ -214,7 +184,30 @@ public class ModuleCache {
 
                 return CreateModuleRes.cached(mod);
             } else {
+
+                // add dependencies to preludes
+                filePreludes.forEach(prelude -> {
+                    Module sourceModule = prelude.getSourceModule();
+                    sourceModule.usePhase(p -> {
+                        // the source module must be imported by something to access its exports, so has
+                        // already been initialised, and it must still be imported by something, so
+                        // cannot be any of the requested unloading states
+                        if (p != ModulePhase.ACTIVE)
+                            throw new RuntimeException(
+                                    String.format("prelude source module for %s is in phase %s, weird!",
+                                            sourceModule.getName(), p));
+                        return null;
+                    });
+                });
+
                 mod = new Module(path, filePreludes, content, requestedBy.map(Module::getPath));
+
+                filePreludes.forEach(prelude -> {
+                    Module sourceModule = prelude.getSourceModule();
+                    sourceModule.addDependent(mod.getPath());
+                    mod.addDependency(sourceModule.getPath());
+                });
+
                 if (requestedBy.isPresent())
                     requestedBy.get().addDependency(path);
                 cache.put(path, mod);
@@ -289,12 +282,10 @@ public class ModuleCache {
      *
      * an onunload function for now should never cause any imports in any way
      */
-    public Optional<Value> get(List<String> path, String[] preludeNames, Optional<Module> requestedBy)
+    public Optional<Value> get(List<String> path, List<Prelude> preludes, Optional<Module> requestedBy)
             throws IOException {
         if (threadUnloadingTaskCount.get() != 0)
             throw new UnsupportedOperationException("cannot run import during unload");
-
-        List<Prelude> filePreludes = getPreludes(preludeNames);
 
         Optional<Module> cacheHit = useCache(cache -> {
             requestedBy.ifPresent(Module::assertAllowImport);
@@ -306,8 +297,9 @@ public class ModuleCache {
                 if (module.usePhase(ModulePhase::unloadRequested))
                     return Optional.empty();
 
-                if (!module.preludeMatches(filePreludes))
-                    throw new IllegalArgumentException("prelude list does not match previous calls");
+                if (!module.preludeMatches(preludes))
+                    throw new IllegalArgumentException(
+                            String.format("prelude list for %s does not match previous calls", module.getName()));
 
                 if (requestedBy.isPresent()) {
                     requestedBy.get().addDependency(path);
@@ -330,7 +322,7 @@ public class ModuleCache {
 
         // if need to wait for unload, try again until success
         while (resolvedModule.isEmpty()) {
-            CreateModuleRes res = createModule(path, filePreludes, content, requestedBy);
+            CreateModuleRes res = createModule(path, preludes, content, requestedBy);
             switch (res.resType) {
                 case CREATED:
                     resolvedModule = Optional.of(res.module);
@@ -386,11 +378,10 @@ public class ModuleCache {
         }
     }
 
-    public Repl spawnRepl(String fileExt, String[] preludeNames) {
-        List<Prelude> filePreludes = getPreludes(preludeNames);
+    public Repl spawnRepl(String fileExt, List<Prelude> preludes) {
         List<String> replPath = List.of("sys", "repls", Repl.genReplName(fileExt));
 
-        CreateModuleRes createRes = createModule(replPath, filePreludes, "", Optional.empty()); // explicitly
+        CreateModuleRes createRes = createModule(replPath, preludes, "", Optional.empty()); // explicitly
         if (createRes.resType != CreateModuleRes.ResType.CREATED)
             throw new RuntimeException(
                     "how lucky must you be to hit this branch?! its an astronomically small chance!");
