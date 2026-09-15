@@ -315,15 +315,10 @@ public class Module {
             JSCore.LOGGER.error(e.getMessage(), e);
         }
 
-        try {
-            useCtx(ctx -> {
-                ctx.close(true);
-                return null;
-            }); // force interrupts
-        } catch (RuntimeException e) {
-            // TODO: use the custom logger
-            JSCore.LOGGER.error(e.getMessage(), e);
-        }
+        useCtx(ctx -> {
+            ctx.close(false);
+            return null;
+        }); // interrupts quietly
     }
 
     /**
@@ -375,7 +370,7 @@ public class Module {
     }
 
     public String getName() {
-        return String.join("/", this.path);
+        return "/" + String.join("/", this.path);
     }
 
     void unsetExplicitlyLoaded() {
