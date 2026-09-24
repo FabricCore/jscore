@@ -14,6 +14,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.StreamSupport;
 
@@ -113,6 +114,13 @@ public class Module {
 
     private Context __ctx;
 
+    private void useCtx(Consumer<Context> f) {
+        useCtx((ctx) -> {
+            f.accept(ctx);
+            return null;
+        });
+    }
+
     private <T> T useCtx(Function<Context, T> f) {
         ctxLock.lock();
         try {
@@ -190,6 +198,13 @@ public class Module {
      */
     private Lock phaseLock = new ReentrantLock();
 
+    void usePhase(Consumer<ModulePhase> f) {
+        usePhase(phase -> {
+            f.accept(phase);
+            return null;
+        });
+    }
+
     <T> T usePhase(Function<ModulePhase, T> f) {
         phaseLock.lock();
         try {
@@ -220,7 +235,6 @@ public class Module {
                 case UNLOAD_WAITING_INIT:
                     break;
             }
-            return null;
         });
 
         try {
@@ -234,8 +248,6 @@ public class Module {
                 globalScope.forEach((key, value) -> __ctx.getBindings(this.langDef.id()).putMember(key, value));
                 __ctx.getBindings(this.langDef.id()).putMember("module", this.langDef.wrapModule(this));
                 this.evalWithoutWaiting(content);
-
-                return null;
             });
         } catch (RuntimeException e) {
             initError = Optional.of(e);
@@ -255,8 +267,6 @@ public class Module {
                                 String.format("not possible to have state %s when done initialising",
                                         phase.toString()));
                 }
-
-                return null;
             });
         } finally {
             initWaiter.countDown();
@@ -275,8 +285,6 @@ public class Module {
                 default:
                     break;
             }
-
-            return null;
         });
 
         Utils.waitFor(initWaiter);
@@ -305,7 +313,6 @@ public class Module {
 
         usePhase(phase -> {
             __phase = ModulePhase.UNLOADING;
-            return null;
         });
 
         try {
@@ -317,7 +324,6 @@ public class Module {
 
         useCtx(ctx -> {
             ctx.close(false);
-            return null;
         }); // interrupts quietly
     }
 
@@ -338,7 +344,9 @@ public class Module {
             Source src = Source.newBuilder(this.langDef.id(), content, String.join("/", path)).build(); // this could
                                                                                                         // cause IO
             // exceptions
-            return useCtx(ctx -> ctx.eval(src));
+            return useCtx(ctx -> {
+                return ctx.eval(src);
+            });
         } catch (IOException e) {
             throw new RuntimeException(e); // TODO: make this less shitty
         }
@@ -387,8 +395,11 @@ public class Module {
     }
 
     void removeDependentOnly(List<String> path) {
-        if (dependents.remove(path))
-            dependentsWaiter.countDown();
+        if (!dependents.remove(path))
+            throw new UnsupportedOperationException(
+                    "unreachable? should not call this unless path is a dependent of the current module");
+
+        dependentsWaiter.countDown();
     }
 
     void endDependentUnloading() {
@@ -457,8 +468,6 @@ public class Module {
                     __phase = ModulePhase.UNLOAD_WAITING_INIT;
                     break;
             }
-
-            return null;
         });
     }
 
@@ -520,8 +529,6 @@ public class Module {
         usePhase(phase -> {
             if (!phase.allowImport())
                 throw new UnsupportedOperationException(String.format("importing is not allowed in phase %s", phase));
-
-            return null;
         });
     }
 

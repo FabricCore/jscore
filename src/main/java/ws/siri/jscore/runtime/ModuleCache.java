@@ -10,6 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.graalvm.polyglot.Value;
@@ -81,6 +84,15 @@ public class ModuleCache {
         return instance;
     }
 
+    private Lock cacheLock = new ReentrantLock();
+
+    private void useCache(Consumer<Map<List<String>, Module>> f) {
+        useCache(cache -> {
+            f.accept(cache);
+            return null;
+        });
+    }
+
     /**
      * you MUST NOT access cache, or modify the tree outside of useCache in any way,
      * including dependencies
@@ -92,8 +104,13 @@ public class ModuleCache {
      * values will not be read until the unloading has
      * completed and they are removed from cache
      */
-    private synchronized <T> T useCache(Function<Map<List<String>, Module>, T> consumer) {
-        return consumer.apply(__cache);
+    private <T> T useCache(Function<Map<List<String>, Module>, T> f) {
+        cacheLock.lock();
+        try {
+            return f.apply(__cache);
+        } finally {
+            cacheLock.unlock();
+        }
     }
 
     private Path getModulePath(List<String> path) {
@@ -197,7 +214,6 @@ public class ModuleCache {
                         throw new RuntimeException(
                                 String.format("prelude source module for %s is in phase %s, weird!",
                                         sourceModule.getName(), p));
-                    return null;
                 });
             });
 
@@ -358,7 +374,6 @@ public class ModuleCache {
                     unloadable.getDependencies().forEach(depPath -> {
                         cache.get(depPath).endDependentUnloading();
                     });
-                    return null;
                 });
 
                 unloadable.doneUnloading();
