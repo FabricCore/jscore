@@ -24,7 +24,7 @@ import ws.siri.jscore.runtime.ClassMarkers.LangDef;
  */
 public class Repl {
     private Module internal;
-    private boolean isFresh = true;
+    private volatile boolean isFresh = true;
     private static Optional<Repl> focusedClient = Optional.empty();
     private static Optional<Repl> focusedServer = Optional.empty();
 

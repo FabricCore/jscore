@@ -122,8 +122,8 @@ public class Module {
         }
     }
 
-    private Optional<Value> exports = Optional.empty();
-    private Optional<Runnable> onunload = Optional.empty();
+    private volatile Optional<Value> exports = Optional.empty();
+    private volatile Optional<Runnable> onunload = Optional.empty();
 
     /**
      * whether the loading was explicit: all modules must have an explicit dependent
@@ -134,7 +134,7 @@ public class Module {
      * - entry points to the server/client scripts
      * - repls
      */
-    private boolean explicitlyLoaded = false;
+    private volatile boolean explicitlyLoaded = false;
     /**
      * set of modules this module imports
      */
@@ -387,8 +387,8 @@ public class Module {
     }
 
     void removeDependentOnly(List<String> path) {
-        dependents.remove(path);
-        dependentsWaiter.countDown();
+        if (dependents.remove(path))
+            dependentsWaiter.countDown();
     }
 
     void endDependentUnloading() {
@@ -535,12 +535,12 @@ public class Module {
             return false;
 
         Module other = (Module) obj;
-        return this.getPath().equals(other.getPath()) && this.langDef.id().equals(other.langDef.id())
-                && this.useCtx(c -> c).equals(other.useCtx(c -> c));
+        // no need to test for ctx, because for each path, only one Module exists
+        return this.getPath().equals(other.getPath()) && this.langDef.id().equals(other.langDef.id());
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(this.getPath(), this.langDef.id(), useCtx(c -> c));
+        return Objects.hash(this.getPath(), this.langDef.id());
     }
 }

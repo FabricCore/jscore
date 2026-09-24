@@ -144,6 +144,28 @@ public class ModuleCache {
         return unloadablesOrdered;
     }
 
+    private static Optional<CreateModuleRes> getCached(Map<List<String>, Module> cache, List<String> path,
+            List<Prelude> preludes, Optional<Module> requestedBy) {
+        if (!cache.containsKey(path))
+            return Optional.empty();
+
+        Module module = cache.get(path);
+        if (module.usePhase(ModulePhase::unloadRequested))
+            return Optional.of(CreateModuleRes.waitForUnload(() -> module.waitForUnload()));
+
+        if (!module.preludeMatches(preludes))
+            throw new IllegalArgumentException(
+                    String.format("prelude list for %s does not match previous calls", module.getName()));
+
+        if (requestedBy.isPresent()) {
+            requestedBy.get().addDependency(path);
+            module.addDependent(requestedBy.get().getPath());
+        } else
+            throw new IllegalArgumentException("pinning an already loaded file is not (yet) a thing");
+
+        return Optional.of(CreateModuleRes.cached(module));
+    }
+
     /**
      * centralised place for creating new (blank modules)
      *
@@ -160,60 +182,38 @@ public class ModuleCache {
             Optional<Module> requestedBy) {
         return useCache(cache -> {
             requestedBy.ifPresent(Module::assertAllowImport);
-            Module mod;
-            final boolean inCache = cache.containsKey(path);
-            if (inCache) {
-                // rechecks as there may be a time difference between it has last been checked
-                // in get
-                // this block of code must also be replicated in get
-                mod = cache.get(path);
+            Optional<CreateModuleRes> cacheHit = getCached(cache, path, filePreludes, requestedBy);
+            if (cacheHit.isPresent())
+                return cacheHit.get();
 
-                // retry if module is currently being unloaded
-                if (mod.usePhase(ModulePhase::unloadRequested))
-                    return CreateModuleRes.waitForUnload(() -> mod.waitForUnload());
-
-                if (!mod.preludeMatches(filePreludes))
-                    throw new IllegalArgumentException(
-                            String.format("prelude list for %s does not match previous calls", mod.getName()));
-
-                if (requestedBy.isPresent()) {
-                    requestedBy.get().addDependency(path);
-                    mod.addDependent(requestedBy.get().getPath());
-                } else
-                    throw new IllegalArgumentException("pinning an already loaded file is not (yet) a thing");
-
-                return CreateModuleRes.cached(mod);
-            } else {
-
-                // add dependencies to preludes
-                filePreludes.forEach(prelude -> {
-                    Module sourceModule = prelude.getSourceModule();
-                    sourceModule.usePhase(p -> {
-                        // the source module must be imported by something to access its exports, so has
-                        // already been initialised, and it must still be imported by something, so
-                        // cannot be any of the requested unloading states
-                        if (p != ModulePhase.ACTIVE)
-                            throw new RuntimeException(
-                                    String.format("prelude source module for %s is in phase %s, weird!",
-                                            sourceModule.getName(), p));
-                        return null;
-                    });
+            // add dependencies to preludes
+            filePreludes.forEach(prelude -> {
+                Module sourceModule = prelude.getSourceModule();
+                sourceModule.usePhase(p -> {
+                    // the source module must be imported by something to access its exports, so has
+                    // already been initialised, and it must still be imported by something, so
+                    // cannot be any of the requested unloading states
+                    if (p != ModulePhase.ACTIVE)
+                        throw new RuntimeException(
+                                String.format("prelude source module for %s is in phase %s, weird!",
+                                        sourceModule.getName(), p));
+                    return null;
                 });
+            });
 
-                mod = new Module(path, filePreludes, content, requestedBy.map(Module::getPath));
+            Module mod = new Module(path, filePreludes, content, requestedBy.map(Module::getPath));
 
-                filePreludes.forEach(prelude -> {
-                    Module sourceModule = prelude.getSourceModule();
-                    sourceModule.addDependent(mod.getPath());
-                    mod.addDependency(sourceModule.getPath());
-                });
+            filePreludes.forEach(prelude -> {
+                Module sourceModule = prelude.getSourceModule();
+                sourceModule.addDependent(mod.getPath());
+                mod.addDependency(sourceModule.getPath());
+            });
 
-                if (requestedBy.isPresent())
-                    requestedBy.get().addDependency(path);
-                cache.put(path, mod);
+            if (requestedBy.isPresent())
+                requestedBy.get().addDependency(path);
+            cache.put(path, mod);
 
-                return CreateModuleRes.created(mod);
-            }
+            return CreateModuleRes.created(mod);
         });
     }
 
@@ -287,33 +287,23 @@ public class ModuleCache {
         if (threadUnloadingTaskCount.get() != 0)
             throw new UnsupportedOperationException("cannot run import during unload");
 
-        Optional<Module> cacheHit = useCache(cache -> {
+        Optional<CreateModuleRes> cacheHit = useCache(cache -> {
             requestedBy.ifPresent(Module::assertAllowImport);
-
-            if (cache.containsKey(path)) {
-                // this block of code must also be replicated in createModule
-                Module module = cache.get(path);
-
-                if (module.usePhase(ModulePhase::unloadRequested))
-                    return Optional.empty();
-
-                if (!module.preludeMatches(preludes))
-                    throw new IllegalArgumentException(
-                            String.format("prelude list for %s does not match previous calls", module.getName()));
-
-                if (requestedBy.isPresent()) {
-                    requestedBy.get().addDependency(path);
-                    module.addDependent(requestedBy.get().getPath());
-                } else
-                    throw new IllegalArgumentException("pinning an already loaded file is not (yet) a thing");
-
-                return Optional.of(module);
-            } else
-                return Optional.empty();
+            return getCached(cache, path, preludes, requestedBy);
         });
 
-        if (cacheHit.isPresent())
-            return cacheHit.get().waitForExports();
+        if (cacheHit.isPresent()) {
+            CreateModuleRes res = cacheHit.get();
+            switch (res.resType) {
+                case CREATED:
+                    throw new RuntimeException("getCached should not return created");
+                case CACHE_HIT:
+                    return res.module.waitForExports();
+                case WAIT_FOR_UNLOAD:
+                    res.waitForUnload.run();
+                    break;
+            }
+        }
 
         Path filePath = getModulePath(path);
         String content = Files.readString(filePath);
