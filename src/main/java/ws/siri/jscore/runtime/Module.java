@@ -27,9 +27,6 @@ import org.graalvm.polyglot.proxy.ProxyObject;
 import ws.siri.jscore.JSCore;
 import ws.siri.jscore.Utils;
 import ws.siri.jscore.Utils.CounterLock;
-import ws.siri.jscore.runtime.ClassMarkers.LangDef;
-import ws.siri.jscore.runtime.ClassMarkers.LangSpecificModule;
-import ws.siri.jscore.runtime.ClassMarkers.Prelude;
 
 /**
  * the module object should never be directly accessible, currently it is a
@@ -240,13 +237,13 @@ public class Module {
         try {
             useCtx(ctx -> {
                 __ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
+                this.langDef.prepare(ctx, this.langDef.wrapModule(this));
 
                 // apply preludes
                 Map<String, Object> globalScope = new HashMap<>();
                 ProxyObject globalScopeProxy = ProxyObject.fromMap(globalScope);
                 preludes.forEach(prelude -> prelude.apply(globalScopeProxy, this));
                 globalScope.forEach((key, value) -> __ctx.getBindings(this.langDef.id()).putMember(key, value));
-                __ctx.getBindings(this.langDef.id()).putMember("module", this.langDef.wrapModule(this));
                 this.evalWithoutWaiting(content);
             });
         } catch (RuntimeException e) {

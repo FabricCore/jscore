@@ -19,7 +19,6 @@ import org.graalvm.polyglot.Value;
 
 import net.fabricmc.loader.api.FabricLoader;
 import ws.siri.jscore.JSCore;
-import ws.siri.jscore.runtime.ClassMarkers.Prelude;
 import ws.siri.jscore.runtime.Module.ModulePhase;
 
 public class ModuleCache {

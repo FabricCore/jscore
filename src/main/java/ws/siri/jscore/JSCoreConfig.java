@@ -14,7 +14,7 @@ import com.google.gson.GsonBuilder;
 
 import net.fabricmc.loader.api.FabricLoader;
 import ws.siri.jscore.runtime.Runtime;
-import ws.siri.jscore.runtime.ClassMarkers.LangDef;
+import ws.siri.jscore.runtime.LangDef;
 
 public class JSCoreConfig {
     private static Gson GSON = new GsonBuilder().setPrettyPrinting().create();

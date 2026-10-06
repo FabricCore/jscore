@@ -11,7 +11,6 @@ import java.util.UUID;
 import org.graalvm.polyglot.Value;
 
 import ws.siri.jscore.JSCoreConfig;
-import ws.siri.jscore.runtime.ClassMarkers.LangDef;
 
 /**
  * Pinned code files that can have new lines of code being evaluated into it
