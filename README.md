@@ -32,8 +32,8 @@ Module system for running scripting languages in Minecraft.
   TLDR: no unexpected behaviour from calling import/unimports in multiple threads at the same time.
   
 - #### Multi-language support
-  Supports any [GraalVM](https://www.graalvm.org/) languages, allows importing
-  items from a module written in a different language.
+  Supports any [GraalVM languages](https://www.graalvm.org/latest/graalvm-as-a-platform/language-implementation-framework/Languages/),
+  allows importing items from a module written in a different language.
   
   Note: you need a runtime for the language (e.g. [jsc/js-runtime](https://git.siri.ws/jsc/js-runtime))
   to run a script file, language is recognised by its file extension.
