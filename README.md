@@ -29,7 +29,7 @@ Module system for running scripting languages in Minecraft.
 - #### Thread safety
   Module import/unimports are atomic operations and thread safe.
 
-  TLDR: no unexpected behaviour from calling import/unimports from multiple threads.
+  TLDR: no unexpected behaviour from calling import/unimports in multiple threads at the same time.
   
 - #### Multi-language support
   Supports any [GraalVM](https://www.graalvm.org/) languages, allows importing
