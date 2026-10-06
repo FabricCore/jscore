@@ -237,7 +237,7 @@ public class Module {
         try {
             useCtx(ctx -> {
                 __ctx = Context.newBuilder().allowAllAccess(true).engine(Runtime.getInstance().getEngine()).build();
-                this.langDef.prepare(ctx, this.langDef.wrapModule(this));
+                this.langDef.prepare(__ctx, this.langDef.wrapModule(this));
 
                 // apply preludes
                 Map<String, Object> globalScope = new HashMap<>();
